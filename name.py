@@ -813,11 +813,26 @@ class MLIntervalAnalyzer:
     """ML klasė pirminių intervalų nustatymui"""
     def __init__(self):
         self.primary_features = [
+            # Syrax Scanner parametrai
             'dev_created_tokens',
             'same_name_count',
             'same_website_count',
             'same_telegram_count',
-            'same_twitter_count'
+            'same_twitter_count',
+            'dev_bought_percentage',
+            'dev_bought_curve_percentage',  # Pridėta
+            'dev_sold_percentage',          # Pridėta
+            'holders_total',
+            'holders_top10_percentage',     # Pridėta
+            'holders_top25_percentage',     # Pridėta
+            'holders_top50_percentage',     # Pridėta
+            # Soul Scanner parametrai
+            'market_cap',
+            'liquidity_usd',
+            # Proficy parametrai
+            'volume_1h',
+            'price_change_1h',
+            'bs_ratio_1h'                   # Pridėta
         ]
         self.scaler = MinMaxScaler()
         self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
@@ -834,7 +849,11 @@ class MLIntervalAnalyzer:
         for gem in successful_gems:
             features = []
             for feature in self.primary_features:
-                value = float(gem.get('syrax', {}).get(feature, 0))
+                # Tiesiogiai imame reikšmę iš DB row
+                try:
+                    value = float(gem[feature] if gem[feature] is not None else 0)
+                except (ValueError, TypeError):
+                    value = 0.0
                 features.append(value)
             X.append(features)
         
@@ -869,10 +888,14 @@ class MLIntervalAnalyzer:
     def check_primary_parameters(self, token_data: Dict) -> Dict:
         """Tikrina ar token'o parametrai patenka į ML nustatytus intervalus"""
         results = {}
-        syrax_data = token_data.get('syrax', {})
         
         for feature in self.primary_features:
-            value = float(syrax_data.get(feature, 0))
+            # Tiesiogiai imame reikšmę iš parametrų
+            try:
+                value = float(token_data[feature] if token_data[feature] is not None else 0)
+            except (ValueError, TypeError, KeyError):
+                value = 0.0
+                
             interval = self.intervals[feature]
             
             in_range = interval['min'] <= value <= interval['max']
@@ -1380,13 +1403,96 @@ class DatabaseManager:
         """Užkrauna visus GEM token'us su jų pradiniais duomenimis ML analizei"""
         try:
             self.cursor.execute('''
-            SELECT g.*, t.first_seen
-            FROM gem_tokens g
-            JOIN tokens t ON g.token_address = t.address
+            SELECT 
+                t.address,
+                t.first_seen,
+                -- Soul Scanner pradiniai duomenys
+                s.name,
+                s.symbol,
+                s.market_cap,
+                s.ath_market_cap,
+                s.liquidity_usd,
+                s.liquidity_sol,
+                s.mint_status,
+                s.freeze_status,
+                s.lp_status,
+                s.dex_status_paid,
+                s.dex_status_ads,
+                s.total_scans,
+                s.social_link_x,
+                s.social_link_tg,
+                s.social_link_web,
+                -- Syrax Scanner pradiniai duomenys
+                sy.dev_bought_tokens,
+                sy.dev_bought_sol,
+                sy.dev_bought_percentage,
+                sy.dev_bought_curve_percentage,
+                sy.dev_created_tokens,
+                sy.same_name_count,
+                sy.same_website_count,
+                sy.same_telegram_count,
+                sy.same_twitter_count,
+                sy.bundle_count,
+                sy.bundle_supply_percentage,
+                sy.bundle_curve_percentage,
+                sy.bundle_sol,
+                sy.notable_bundle_count,
+                sy.notable_bundle_supply_percentage,
+                sy.notable_bundle_curve_percentage,
+                sy.notable_bundle_sol,
+                sy.sniper_activity_tokens,
+                sy.sniper_activity_percentage,
+                sy.sniper_activity_sol,
+                sy.created_time,
+                sy.traders_count,
+                sy.traders_last_swap,
+                sy.holders_total,
+                sy.holders_top10_percentage,
+                sy.holders_top25_percentage,
+                sy.holders_top50_percentage,
+                sy.dev_holds,
+                sy.dev_sold_times,
+                sy.dev_sold_sol,
+                sy.dev_sold_percentage,
+                -- Proficy pradiniai duomenys
+                p.price_change_5m,
+                p.volume_5m,
+                p.bs_ratio_5m,
+                p.price_change_1h,
+                p.volume_1h,
+                p.bs_ratio_1h,
+                -- GEM analizės rezultatai
+                g.similarity_score,
+                g.confidence_level,
+                g.recommendation,
+                g.avg_z_score,
+                g.is_passed,
+                g.discovery_time
+            FROM tokens t
+            JOIN gem_tokens g ON t.address = g.token_address
+            JOIN soul_scanner_data s ON t.address = s.token_address
+            JOIN syrax_scanner_data sy ON t.address = sy.token_address
+            JOIN proficy_price_data p ON t.address = p.token_address
             WHERE t.is_gem = TRUE
+            AND s.scan_time = (
+                SELECT MIN(scan_time) 
+                FROM soul_scanner_data 
+                WHERE token_address = t.address
+            )
+            AND sy.scan_time = (
+                SELECT MIN(scan_time) 
+                FROM syrax_scanner_data 
+                WHERE token_address = t.address
+            )
+            AND p.scan_time = (
+                SELECT MIN(scan_time) 
+                FROM proficy_price_data 
+                WHERE token_address = t.address
+            )
             ORDER BY g.discovery_time DESC
             ''')
-            return [dict(row) for row in self.cursor.fetchall()]
+            rows = self.cursor.fetchall()
+            return [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"Error loading GEM tokens: {e}")
             return []
@@ -1397,7 +1503,7 @@ class DatabaseManager:
         try:
             for feature, values in intervals.items():
                 self.cursor.execute('''
-                INSERT INTO ml_intervals (
+                INSERT OR REPLACE INTO ml_intervals (
                     feature_name, min_value, max_value, mean_value, std_value
                 ) VALUES (?, ?, ?, ?, ?)
                 ''', (
