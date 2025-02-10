@@ -77,10 +77,7 @@ class TokenMonitor:
         ))
         self.db.conn.commit()
 
-    async def display_stats(self):
-        """Parodo duomenų bazės statistiką"""
-        self.db.display_database_stats()
-
+    
     async def initialize(self):
         """Initialize clients"""
         await self.telegram.start()
@@ -1018,45 +1015,7 @@ class CustomSQLiteSession(SQLiteSession):
         if self._db_connection:
             self._db_connection.commit()
 
-    def display_database_stats(self):
-        """Parodo duomenų bazės statistiką"""
-        try:
-            # Tokens statistika
-            self.cursor.execute("SELECT COUNT(*) FROM tokens")
-            total_tokens = self.cursor.fetchone()[0]
-            
-            # GEM tokens statistika
-            self.cursor.execute("SELECT COUNT(*) FROM tokens WHERE is_gem = TRUE")
-            gem_tokens = self.cursor.fetchone()[0]
-            
-            # Paskutiniai 5 tokenai
-            self.cursor.execute("""
-            SELECT t.address, t.first_seen, s.name, s.symbol, s.market_cap
-            FROM tokens t
-            LEFT JOIN soul_scanner_data s ON t.address = s.token_address
-            ORDER BY t.first_seen DESC
-            LIMIT 5
-            """)
-            recent_tokens = self.cursor.fetchall()
-            
-            # Išvedame statistiką
-            print("\n=== DATABASE STATISTICS ===")
-            print(f"Total Tokens: {total_tokens}")
-            print(f"Total GEMs: {gem_tokens}")
-            
-            print("\n=== LAST 5 TOKENS ===")
-            for token in recent_tokens:
-                print(f"\nAddress: {token[0]}")
-                print(f"First seen: {token[1]}")
-                print(f"Name: {token[2]}")
-                print(f"Symbol: {token[3]}")
-                print(f"Market Cap: ${token[4]:,.2f}" if token[4] else "Market Cap: N/A")
-            
-            print("\n=====================")
-            
-        except Exception as e:
-            logger.error(f"Error displaying database stats: {e}")
-
+    
 async def main():
     """Main function to run the token monitor"""
     try:
@@ -1084,6 +1043,9 @@ async def main():
 
         print(f"\nCurrent Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Current User's Login: minijus05\n")
+
+        # Rodyti duomenų bazės statistiką po inicializacijos
+        monitor.db.display_database_stats()
 
         @monitor.telegram.on(events.NewMessage(chats=Config.TELEGRAM_SOURCE_CHATS))
         async def message_handler(event):
@@ -1324,7 +1286,118 @@ class DatabaseManager:
         try:
             self.conn.close()
         except Exception as e:
-            logger.error(f"Error closing database connection: {e}")        
+            logger.error(f"Error closing database connection: {e}")
+
+    def display_database_stats(self):
+        """Parodo išsamią duomenų bazės statistiką"""
+        try:
+            print("\n=== DETAILED DATABASE STATISTICS ===")
+            
+            # Bendra statistika
+            self.cursor.execute("SELECT COUNT(*) FROM tokens")
+            total_tokens = self.cursor.fetchone()[0]
+            self.cursor.execute("SELECT COUNT(*) FROM tokens WHERE is_gem = TRUE")
+            gem_tokens = self.cursor.fetchone()[0]
+            
+            print(f"Total Tokens in Database: {total_tokens}")
+            print(f"Total GEM Tokens: {gem_tokens}")
+            
+            # Paskutiniai tokenai su visa informacija
+            print("\n=== LAST 10 TOKENS WITH FULL INFO ===")
+            self.cursor.execute("""
+            SELECT 
+                t.address,
+                t.first_seen,
+                t.last_updated,
+                t.is_gem,
+                t.total_scans,
+                s.name,
+                s.symbol,
+                s.market_cap,
+                s.liquidity_usd,
+                s.mint_status,
+                s.freeze_status,
+                sy.dev_created_tokens,
+                sy.holders_total,
+                sy.dev_bought_sol,
+                sy.dev_bought_percentage,
+                p.price_change_1h,
+                p.volume_1h
+            FROM tokens t
+            LEFT JOIN soul_scanner_data s ON t.address = s.token_address
+            LEFT JOIN syrax_scanner_data sy ON t.address = sy.token_address
+            LEFT JOIN proficy_price_data p ON t.address = p.token_address
+            ORDER BY t.first_seen DESC
+            LIMIT 10
+            """)
+            
+            tokens = self.cursor.fetchall()
+            for token in tokens:
+                print("\n-----------------------------------")
+                print(f"Address: {token[0]}")
+                print(f"First seen: {token[1]}")
+                print(f"Last updated: {token[2]}")
+                print(f"Is GEM: {'Yes' if token[3] else 'No'}")
+                print(f"Total scans: {token[4]}")
+                print(f"Name: {token[5]}")
+                print(f"Symbol: {token[6]}")
+                print(f"Market Cap: ${token[7]:,.2f}" if token[7] else "Market Cap: N/A")
+                print(f"Liquidity: ${token[8]:,.2f}" if token[8] else "Liquidity: N/A")
+                print(f"Mint Status: {token[9]}")
+                print(f"Freeze Status: {token[10]}")
+                print(f"Dev Created Tokens: {token[11]}")
+                print(f"Total Holders: {token[12]}")
+                print(f"Dev Bought SOL: {token[13]}")
+                print(f"Dev Bought %: {token[14]}%")
+                print(f"1h Price Change: {token[15]}%")
+                print(f"1h Volume: ${token[16]:,.2f}" if token[16] else "Volume: N/A")
+
+            # GEM Tokenų statistika
+            print("\n=== GEM TOKENS STATISTICS ===")
+            self.cursor.execute("""
+            SELECT 
+                t.address,
+                s.name,
+                s.symbol,
+                g.similarity_score,
+                g.confidence_level,
+                g.recommendation,
+                g.discovery_time
+            FROM tokens t
+            JOIN gem_tokens g ON t.address = g.token_address
+            JOIN soul_scanner_data s ON t.address = s.token_address
+            WHERE t.is_gem = TRUE
+            ORDER BY g.discovery_time DESC
+            """)
+            
+            gems = self.cursor.fetchall()
+            for gem in gems:
+                print("\n-----------------------------------")
+                print(f"GEM Address: {gem[0]}")
+                print(f"Name: {gem[1]}")
+                print(f"Symbol: {gem[2]}")
+                print(f"Similarity Score: {gem[3]}%")
+                print(f"Confidence Level: {gem[4]}%")
+                print(f"Recommendation: {gem[5]}")
+                print(f"Discovery Time: {gem[6]}")
+
+            print("\n=== DATABASE SUMMARY ===")
+            # Scanner statistika
+            self.cursor.execute("SELECT COUNT(*) FROM soul_scanner_data")
+            soul_scans = self.cursor.fetchone()[0]
+            self.cursor.execute("SELECT COUNT(*) FROM syrax_scanner_data")
+            syrax_scans = self.cursor.fetchone()[0]
+            self.cursor.execute("SELECT COUNT(*) FROM proficy_price_data")
+            proficy_scans = self.cursor.fetchone()[0]
+            
+            print(f"Total Soul Scanner Records: {soul_scans}")
+            print(f"Total Syrax Scanner Records: {syrax_scans}")
+            print(f"Total Proficy Price Records: {proficy_scans}")
+            
+            print("\n=====================")
+            
+        except Exception as e:
+            logger.error(f"Error displaying database stats: {e}")
 
 def initialize_database():
     """Inicializuoja duomenų bazę"""
@@ -1478,25 +1551,6 @@ if __name__ == "__main__":
         # Inicializuojame duomenų bazę
         initialize_database()
         
-        print(f"Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"Current User's Login: minijus05\n")
-        
-        # Įrašome bot'o paleidimo informaciją
-        conn = sqlite3.connect('token_monitor.db')
-        c = conn.cursor()
-        c.execute('''
-        INSERT INTO bot_info (start_time, user_login, last_active)
-        VALUES (?, ?, ?)
-        ''', (
-            datetime.now(timezone.utc),
-            "minijus05",
-            datetime.now(timezone.utc)
-        ))
-        conn.commit()
-        conn.close()
-        
-        
-                
         # Run the bot
         asyncio.run(main())
     except KeyboardInterrupt:
