@@ -1154,7 +1154,7 @@ async def main():
         print(f"Current User's Login: minijus05\n")
 
         # Rodyti duomenų bazės statistiką po inicializacijos
-        #monitor.db.display_database_stats()
+        monitor.db.display_database_stats()
 
         @monitor.telegram.on(events.NewMessage(chats=Config.TELEGRAM_SOURCE_CHATS))
         async def message_handler(event):
@@ -1191,14 +1191,73 @@ class DatabaseManager:
         self.conn.row_factory = sqlite3.Row  # Leidžia gauti rezultatus kaip žodynus
         self.cursor = self.conn.cursor()
 
-    def save_token_data(self, address: str, soul_data: Dict, syrax_data: Dict, proficy_data: Dict):
-        """Išsaugo visus token duomenis"""
+    def calculate_multiplier(self, address: str, current_mc: float) -> tuple[float, float]:
+        """
+        Apskaičiuoja token'o multiplier'į lyginant su pradiniu Market Cap
+        
+        Args:
+            address: Token'o adresas
+            current_mc: Dabartinis Market Cap
+        
+        Returns:
+            tuple[float, float]: (pradinis_mc, multiplier)
+        """
+        # Gauname pradinį Market Cap
+        self.cursor.execute('''
+            SELECT market_cap 
+            FROM soul_scanner_data 
+            WHERE token_address = ? 
+            ORDER BY scan_time ASC 
+            LIMIT 1
+        ''', (address,))
+        
+        result = self.cursor.fetchone()
+        if not result or not result[0] or result[0] == 0:
+            return 0, 0
+            
+        initial_mc = result[0]
+        multiplier = current_mc / initial_mc if current_mc > 0 else 0
+        
+        return initial_mc, multiplier
+
+    def save_token_data(self, address: str, soul_data: Dict, syrax_data: Dict, proficy_data: Dict, is_new_token: bool):
         try:
-            # Įrašome pagrindinį token
-            self.cursor.execute('''
-                INSERT OR REPLACE INTO tokens (address, last_updated)
-                VALUES (?, CURRENT_TIMESTAMP)
-            ''', (address,))
+            current_mc = soul_data.get('market_cap', 0) if soul_data else 0
+            
+            if not is_new_token:  # Kai tai UPDATE
+                initial_mc, multiplier = self.calculate_multiplier(address, current_mc)
+                
+                if initial_mc > 0 and multiplier > 0:
+                    # Spausdiname info apie multiplier
+                    print(f"\n{'='*50}")
+                    print(f"Token: {address}")
+                    print(f"Initial Market Cap: {initial_mc:,.2f} USD")
+                    print(f"Current Market Cap: {current_mc:,.2f} USD")
+                    print(f"Current Multiplier: {multiplier:.2f}x")
+                    print(f"{'='*50}\n")
+                    
+                    # Jei pasiekė GEM_MULTIPLIER
+                    if multiplier >= float(config.GEM_MULTIPLIER.rstrip('x')):
+                        # Pažymime kaip GEM
+                        self.cursor.execute('''
+                            UPDATE tokens 
+                            SET is_gem = TRUE 
+                            WHERE address = ?
+                        ''', (address,))
+                        
+                        print(f"🌟 Token {address} has reached {multiplier:.2f}x and is now marked as GEM!")
+                        
+                        # Įrašome į gem_tokens ML analizei
+                        self.cursor.execute('''
+                            INSERT OR IGNORE INTO gem_tokens (
+                                token_address,
+                                similarity_score,
+                                confidence_level,
+                                recommendation,
+                                avg_z_score,
+                                is_passed
+                            ) VALUES (?, 100, 100, 'CONFIRMED GEM', 0, TRUE)
+                        ''', (address,))
 
             # Soul Scanner duomenys
             if soul_data:
