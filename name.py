@@ -40,7 +40,11 @@ class Config:
     PROFICY_PRICE_BOT = 5457577145
 
     # ML settings
-    MIN_GEMS_FOR_ANALYSIS = 10  # Minimalus GEM skaičius prieš pradedant analizę
+    MIN_GEMS_FOR_ANALYSIS = 1  # Minimalus GEM skaičius prieš pradedant analizę
+
+    # GEM settings
+    GEM_MULTIPLIER = "1x"
+    MIN_GEM_SCORE = 10
 
 class TokenMonitor:
     def __init__(self, monitor_session=None, scanner_session=None):
@@ -100,41 +104,77 @@ class TokenMonitor:
             
             if token_addresses:
                 for address in token_addresses:
-                    # Siunčiame į scanner grupę
-                    original_message = await self.scanner_client.send_message(
-                        Config.SCANNER_GROUP,
-                        address
-                    )
-                    logger.info(f"Sent token to scanner group: {address}")
-                    print(f"\nNaujas token adresas: {address}\n")
-
-                    # Renkame scannerių duomenis
-                    scanner_data = await self._collect_scanner_data(address, original_message)
+                    is_new_token = "New" in message
+                    is_from_token = "from" in message.lower()
                     
-                    if scanner_data:
-                        # Išsaugome token duomenis į DB
-                        self.db.save_token_data(
-                            address,
-                            scanner_data['soul'],
-                            scanner_data['syrax'],
-                            scanner_data['proficy']
+                    # Patikriname ar token'as jau yra DB
+                    self.db.cursor.execute("SELECT address FROM tokens WHERE address = ?", (address,))
+                    token_exists = self.db.cursor.fetchone() is not None
+                    
+                    if is_new_token:
+                        print(f"\n[NEW TOKEN DETECTED] Address: {address}")
+                        # Siunčiame į scanner grupę
+                        original_message = await self.scanner_client.send_message(
+                            Config.SCANNER_GROUP,
+                            address
                         )
+                        logger.info(f"Sent NEW token to scanner group: {address}")
                         
-                        # Jei tai "from" žinutė su "10x" - pridedame į GEM duomenų bazę
-                        if "from" in event.message.text.lower() and "10x" in event.message.text:
-                            self.gem_analyzer.add_gem_token(scanner_data)
-                            logger.info(f"Added successful GEM to database: {address}")
+                        # Renkame scannerių duomenis
+                        scanner_data = await self._collect_scanner_data(address, original_message)
                         
-                        # Bandome analizuoti, bet tik jei yra pakankamai duomenų
-                        analysis_result = self.gem_analyzer.analyze_token(scanner_data)
+                        if scanner_data:
+                            # Išsaugome token duomenis į DB
+                            self.db.save_token_data(
+                                address,
+                                scanner_data['soul'],
+                                scanner_data['syrax'],
+                                scanner_data['proficy']
+                            )
+                            print(f"[SUCCESS] Saved NEW token data: {address}")
+                            
+                    elif is_from_token:
+                        if not token_exists:
+                            print(f"\n[SKIPPED UPDATE] Token not found in database: {address}")
+                            continue
+                            
+                        print(f"\n[UPDATE TOKEN DETECTED] Address: {address}")
+                        # Siunčiame į scanner grupę
+                        original_message = await self.scanner_client.send_message(
+                            Config.SCANNER_GROUP,
+                            address
+                        )
+                        logger.info(f"Sent token UPDATE to scanner group: {address}")
                         
-                        if analysis_result['status'] == 'pending':
-                            print(f"\n{analysis_result['message']}")
-                        else:
-                            await self._handle_analysis_results(analysis_result, scanner_data)
+                        # Renkame scannerių duomenis
+                        scanner_data = await self._collect_scanner_data(address, original_message)
+                        
+                        if scanner_data:
+                            # Atnaujiname token duomenis DB
+                            self.db.save_token_data(
+                                address,
+                                scanner_data['soul'],
+                                scanner_data['syrax'],
+                                scanner_data['proficy']
+                            )
+                            print(f"[SUCCESS] Updated existing token data: {address}")
+                            
+                            # Jei tai "from" žinutė su "10x" - pridedame į GEM duomenų bazę
+                            if Config.GEM_MULTIPLIER in event.message.text:
+                                self.gem_analyzer.add_gem_token(scanner_data)
+                                print(f"[GEM ADDED] Token marked as GEM: {address}")
+                            
+                            # Bandome analizuoti
+                            analysis_result = self.gem_analyzer.analyze_token(scanner_data)
+                            
+                            if analysis_result['status'] == 'pending':
+                                print(f"\n[ANALYSIS PENDING] {analysis_result['message']}")
+                            else:
+                                await self._handle_analysis_results(analysis_result, scanner_data)
 
         except Exception as e:
             logger.error(f"Error handling message: {e}")
+            print(f"[ERROR] Message handling failed: {e}")
 
     async def _collect_scanner_data(self, address, original_message):
         """Renka duomenis iš visų scannerių"""
@@ -172,49 +212,118 @@ class TokenMonitor:
 
     async def _handle_analysis_results(self, analysis_result, scanner_data):
         """Formatuoja ir siunčia analizės rezultatus"""
-        if analysis_result['status'] == 'success':
-            message = self._format_analysis_message(analysis_result, scanner_data)
+        # Visada rodome analizės rezultatus ekrane
+        print("\n" + "="*50)
+        print(f"ML ANALYSIS STARTED AT {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        print("="*50)
+        
+        if analysis_result['status'] == 'pending':
+            print(f"\n[ANALYSIS PENDING]")
+            print(f"Reason: {analysis_result['message']}")
+            print(f"Collected GEMs: {analysis_result.get('collected_gems', 0)}")
             
-            # Jei yra geras GEM potencialas, siunčiame į GEM grupę
-            if analysis_result['similarity_score'] >= 60:
+        elif analysis_result['status'] == 'success':
+            soul_data = scanner_data['soul']
+            print(f"\nAnalyzing Token: {soul_data['name']} (${soul_data['symbol']})")
+            print(f"Contract: {soul_data['contract_address']}")
+            
+            print("\n--- PRIMARY PARAMETERS CHECK ---")
+            for param, details in analysis_result['primary_check']['details'].items():
+                status = "✅" if details['in_range'] else "❌"
+                print(f"{status} {param}:")
+                print(f"    Value: {details['value']:.2f}")
+                print(f"    Range: {details['interval']['min']:.2f} - {details['interval']['max']:.2f}")
+                print(f"    Z-Score: {details['z_score']:.2f}")
+            
+            print("\n--- ANALYSIS RESULTS ---")
+            print(f"GEM Potential Score: {analysis_result['similarity_score']:.1f}%")
+            print(f"Confidence Level: {analysis_result['confidence_level']:.1f}%")
+            print(f"Recommendation: {analysis_result['recommendation']}")
+            
+            # Siunčiame žinutę tik jei score >= MIN_GEM_SCORE
+            if analysis_result['similarity_score'] >= Config.MIN_GEM_SCORE:
+                print(f"\n🚀 HIGH GEM POTENTIAL DETECTED! (Score >= {Config.MIN_GEM_SCORE}%)")
+                print(f"Sending alert to {Config.TELEGRAM_GEM_CHAT}")
+                message = self._format_telegram_message(analysis_result, scanner_data)
                 await self.telegram.send_message(
                     Config.TELEGRAM_GEM_CHAT,
-                    message
+                    message,
+                    parse_mode='Markdown'
                 )
                 logger.info(f"Sent potential GEM alert with {analysis_result['similarity_score']}% similarity")
+            else:
+                print(f"\n⚠️ GEM potential ({analysis_result['similarity_score']:.1f}%) below threshold ({Config.MIN_GEM_SCORE}%)")
+                print("No alert sent")
             
-            # Spausdiname rezultatus konsolėje
-            print("\nAnalizės rezultatai:")
-            print(message)
+            print("\n--- MARKET METRICS ---")
+            print(f"Market Cap: ${soul_data['market_cap']:,.2f}")
+            print(f"Liquidity: ${soul_data['liquidity']['usd']:,.2f}")
+            print(f"Holders: {scanner_data['syrax']['holders']['total']}")
+            
+            print("\n--- PRICE ACTION (1H) ---")
+            print(f"Change: {scanner_data['proficy']['1h']['price_change']}%")
+            print(f"Volume: ${scanner_data['proficy']['1h']['volume']:,.2f}")
+            print(f"B/S Ratio: {scanner_data['proficy']['1h']['bs_ratio']}")
+        
+        else:  # status == 'failed'
+            print("\n[ANALYSIS FAILED]")
+            print(f"Stage: {analysis_result['stage']}")
+            print(f"Score: {analysis_result['score']}")
+            print(f"Message: {analysis_result['message']}")
+            
+            if 'details' in analysis_result:
+                print("\nFailed Parameters:")
+                for param, details in analysis_result['details'].items():
+                    print(f"- {param}: {details}")
+        
+        print("\n" + "="*50)
+        print("ANALYSIS COMPLETE")
+        print("="*50 + "\n")
 
     def _format_analysis_message(self, analysis_result, scanner_data):
         """Formatuoja analizės rezultatų žinutę"""
         soul_data = scanner_data['soul']
+        token_address = soul_data['contract_address']
         
         message = [
-            f"🔍 TOKEN ANALYSIS REPORT {'🚀' if analysis_result['similarity_score'] >= 60 else '⚠️'}",
-            f"\nToken: {soul_data['name']} (${soul_data['symbol']})",
-            f"Contract: {soul_data['contract_address']}",
-            f"\n🎯 GEM Potential Score: {analysis_result['similarity_score']:.1f}%",
-            f"🎲 Confidence Level: {analysis_result['confidence_level']:.1f}%",
-            f"📊 Recommendation: {analysis_result['recommendation']}",
-            "\n🔑 Primary Parameters Status:",
+            f"Analyzing Token: {soul_data['name']} (${soul_data['symbol']})",
+            f"Contract: `{token_address}`",
+            f"View: [GMGN.ai](https://gmgn.ai/sol/token/{token_address})",  # Markdown formatas linkui
+            f"\n--- PRIMARY PARAMETERS CHECK ---"
         ]
 
-        # Pridedame pirminių parametrų detales
+        # Pirminių parametrų detales
         for param, details in analysis_result['primary_check']['details'].items():
             status = "✅" if details['in_range'] else "❌"
-            message.append(f"{status} {param}: {details['value']:.2f}")
+            message.extend([
+                f"{status} {param}:",
+                f"    Value: {details['value']:.2f}",
+                f"    Range: {details['interval']['min']:.2f} - {details['interval']['max']:.2f}",
+                f"    Z-Score: {details['z_score']:.2f}"
+            ])
 
-        # Pridedame pagrindinius metrix'us
+        # Analizės rezultatai
         message.extend([
-            f"\n💰 Market Metrics:",
-            f"Market Cap: ${soul_data['market_cap']:,.2f}",
-            f"Liquidity: ${soul_data['liquidity_usd']:,.2f}",
-            f"Holders: {scanner_data['syrax']['holders_total']}",
-            f"\n📈 Price Action (1H):",
-            f"Change: {scanner_data['proficy']['price_1h']}%",
-            f"Volume: ${scanner_data['proficy']['volume_1h']:,.2f}"
+            f"\n--- ANALYSIS RESULTS ---",
+            f"🎯 GEM Potential Score: {analysis_result['similarity_score']:.1f}%",
+            f"🎲 Confidence Level: {analysis_result['confidence_level']:.1f}%",
+            f"📊 Recommendation: {analysis_result['recommendation']}"
+        ])
+
+        # Market Metrics
+        message.extend([
+            f"\n--- MARKET METRICS ---",
+            f"💰 Market Cap: ${soul_data['market_cap']:,.2f}",
+            f"💧 Liquidity: ${soul_data['liquidity']['usd']:,.2f}",
+            f"👥 Holders: {scanner_data['syrax']['holders']['total']}"
+        ])
+
+        # Price Action
+        message.extend([
+            f"\n--- PRICE ACTION (1H) ---",
+            f"📈 Change: {scanner_data['proficy']['1h']['price_change']}%",
+            f"💎 Volume: ${scanner_data['proficy']['1h']['volume']:,.2f}",
+            f"⚖️ B/S Ratio: {scanner_data['proficy']['1h']['bs_ratio']}"
         ])
 
         return "\n".join(message)
@@ -1045,7 +1154,7 @@ async def main():
         print(f"Current User's Login: minijus05\n")
 
         # Rodyti duomenų bazės statistiką po inicializacijos
-        monitor.db.display_database_stats()
+        #monitor.db.display_database_stats()
 
         @monitor.telegram.on(events.NewMessage(chats=Config.TELEGRAM_SOURCE_CHATS))
         async def message_handler(event):
@@ -1291,113 +1400,168 @@ class DatabaseManager:
     def display_database_stats(self):
         """Parodo išsamią duomenų bazės statistiką"""
         try:
-            print("\n=== DETAILED DATABASE STATISTICS ===")
+            print("\n=== DATABASE CONTENT ===")
             
-            # Bendra statistika
-            self.cursor.execute("SELECT COUNT(*) FROM tokens")
-            total_tokens = self.cursor.fetchone()[0]
-            self.cursor.execute("SELECT COUNT(*) FROM tokens WHERE is_gem = TRUE")
-            gem_tokens = self.cursor.fetchone()[0]
-            
-            print(f"Total Tokens in Database: {total_tokens}")
-            print(f"Total GEM Tokens: {gem_tokens}")
-            
-            # Paskutiniai tokenai su visa informacija
-            print("\n=== LAST 10 TOKENS WITH FULL INFO ===")
+            # Pilna užklausa su visais duomenimis
             self.cursor.execute("""
-            SELECT 
-                t.address,
-                t.first_seen,
-                t.last_updated,
-                t.is_gem,
-                t.total_scans,
-                s.name,
-                s.symbol,
-                s.market_cap,
-                s.liquidity_usd,
-                s.mint_status,
-                s.freeze_status,
-                sy.dev_created_tokens,
-                sy.holders_total,
-                sy.dev_bought_sol,
-                sy.dev_bought_percentage,
-                p.price_change_1h,
-                p.volume_1h
-            FROM tokens t
-            LEFT JOIN soul_scanner_data s ON t.address = s.token_address
-            LEFT JOIN syrax_scanner_data sy ON t.address = sy.token_address
-            LEFT JOIN proficy_price_data p ON t.address = p.token_address
-            ORDER BY t.first_seen DESC
-            LIMIT 10
+                WITH LatestData AS (
+                    SELECT 
+                        t.address,
+                        t.first_seen,
+                        t.last_updated,
+                        t.is_gem,
+                        t.total_scans,
+                        s.name,
+                        s.symbol,
+                        s.market_cap,
+                        s.ath_market_cap,
+                        s.liquidity_usd,
+                        s.liquidity_sol,
+                        s.mint_status,
+                        s.freeze_status,
+                        s.lp_status,
+                        s.dex_status_paid,
+                        s.dex_status_ads,
+                        s.social_link_x,
+                        s.social_link_tg,
+                        s.social_link_web,
+                        sy.dev_bought_tokens,
+                        sy.dev_bought_sol,
+                        sy.dev_bought_percentage,
+                        sy.dev_bought_curve_percentage,
+                        sy.dev_created_tokens,
+                        sy.same_name_count,
+                        sy.same_website_count,
+                        sy.same_telegram_count,
+                        sy.same_twitter_count,
+                        sy.bundle_count,
+                        sy.bundle_supply_percentage,
+                        sy.bundle_curve_percentage,
+                        sy.bundle_sol,
+                        sy.notable_bundle_count,
+                        sy.notable_bundle_supply_percentage,
+                        sy.notable_bundle_curve_percentage,
+                        sy.notable_bundle_sol,
+                        sy.sniper_activity_tokens,
+                        sy.sniper_activity_percentage,
+                        sy.sniper_activity_sol,
+                        sy.holders_total,
+                        sy.holders_top10_percentage,
+                        sy.holders_top25_percentage,
+                        sy.holders_top50_percentage,
+                        sy.dev_holds,
+                        sy.dev_sold_times,
+                        sy.dev_sold_sol,
+                        sy.dev_sold_percentage,
+                        p.price_change_5m,
+                        p.volume_5m,
+                        p.bs_ratio_5m,
+                        p.price_change_1h,
+                        p.volume_1h,
+                        p.bs_ratio_1h,
+                        ROW_NUMBER() OVER (PARTITION BY t.address ORDER BY t.last_updated DESC) as rn
+                    FROM tokens t
+                    LEFT JOIN soul_scanner_data s ON t.address = s.token_address
+                    LEFT JOIN syrax_scanner_data sy ON t.address = sy.token_address
+                    LEFT JOIN proficy_price_data p ON t.address = p.token_address
+                )
+                SELECT * FROM LatestData WHERE rn = 1
+                ORDER BY first_seen DESC
             """)
             
-            tokens = self.cursor.fetchall()
+            columns = [description[0] for description in self.cursor.description]
+            tokens = []
+            for row in self.cursor.fetchall():
+                token_dict = {}
+                for i, column in enumerate(columns):
+                    if column != 'rn':
+                        token_dict[column] = row[i]
+                tokens.append(token_dict)
+
             for token in tokens:
-                print("\n-----------------------------------")
-                print(f"Address: {token[0]}")
-                print(f"First seen: {token[1]}")
-                print(f"Last updated: {token[2]}")
-                print(f"Is GEM: {'Yes' if token[3] else 'No'}")
-                print(f"Total scans: {token[4]}")
-                print(f"Name: {token[5]}")
-                print(f"Symbol: {token[6]}")
-                print(f"Market Cap: ${token[7]:,.2f}" if token[7] else "Market Cap: N/A")
-                print(f"Liquidity: ${token[8]:,.2f}" if token[8] else "Liquidity: N/A")
-                print(f"Mint Status: {token[9]}")
-                print(f"Freeze Status: {token[10]}")
-                print(f"Dev Created Tokens: {token[11]}")
-                print(f"Total Holders: {token[12]}")
-                print(f"Dev Bought SOL: {token[13]}")
-                print(f"Dev Bought %: {token[14]}%")
-                print(f"1h Price Change: {token[15]}%")
-                print(f"1h Volume: ${token[16]:,.2f}" if token[16] else "Volume: N/A")
+                print("\n==================== TOKEN INFO ====================")
+                print("Basic Info:")
+                print(f"Address: {token['address']}")
+                print(f"First Seen: {token['first_seen']}")
+                print(f"Last Updated: {token['last_updated']}")
+                print(f"Is GEM: {'Yes' if token['is_gem'] else 'No'}")
+                print(f"Total Scans: {token['total_scans']}")
+                
+                print("\nSoul Scanner Data:")
+                print(f"Name: {token['name']}")
+                print(f"Symbol: {token['symbol']}")
+                print(f"Market Cap: ${token['market_cap']:,.2f}" if token['market_cap'] else "Market Cap: N/A")
+                print(f"ATH Market Cap: ${token['ath_market_cap']:,.2f}" if token['ath_market_cap'] else "ATH Market Cap: N/A")
+                print(f"Liquidity USD: ${token['liquidity_usd']:,.2f}" if token['liquidity_usd'] else "Liquidity USD: N/A")
+                print(f"Liquidity SOL: {token['liquidity_sol']}" if token['liquidity_sol'] else "Liquidity SOL: N/A")
+                print(f"Mint Status: {token['mint_status']}")
+                print(f"Freeze Status: {token['freeze_status']}")
+                print(f"LP Status: {token['lp_status']}")
+                print(f"DEX Status Paid: {token['dex_status_paid']}")
+                print(f"DEX Status Ads: {token['dex_status_ads']}")
+                print(f"Social Links:")
+                print(f"  X: {token['social_link_x']}")
+                print(f"  TG: {token['social_link_tg']}")
+                print(f"  WEB: {token['social_link_web']}")
+                
+                print("\nSyrax Scanner Data:")
+                print(f"Dev Bought:")
+                print(f"  Tokens: {token['dev_bought_tokens']:,.2f}" if token['dev_bought_tokens'] else "  Tokens: N/A")
+                print(f"  SOL: {token['dev_bought_sol']}")
+                print(f"  Percentage: {token['dev_bought_percentage']}%")
+                print(f"  Curve Percentage: {token['dev_bought_curve_percentage']}%")
+                print(f"Dev Created Tokens: {token['dev_created_tokens']}")
+                print(f"Similar Tokens:")
+                print(f"  Same Name: {token['same_name_count']}")
+                print(f"  Same Website: {token['same_website_count']}")
+                print(f"  Same Telegram: {token['same_telegram_count']}")
+                print(f"  Same Twitter: {token['same_twitter_count']}")
+                print(f"Bundle Info:")
+                print(f"  Count: {token['bundle_count']}")
+                print(f"  Supply %: {token['bundle_supply_percentage']}")
+                print(f"  Curve %: {token['bundle_curve_percentage']}")
+                print(f"  SOL: {token['bundle_sol']}")
+                print(f"Notable Bundle Info:")
+                print(f"  Count: {token['notable_bundle_count']}")
+                print(f"  Supply %: {token['notable_bundle_supply_percentage']}")
+                print(f"  Curve %: {token['notable_bundle_curve_percentage']}")
+                print(f"  SOL: {token['notable_bundle_sol']}")
+                print(f"Sniper Activity:")
+                print(f"  Tokens: {token['sniper_activity_tokens']:,.2f}" if token['sniper_activity_tokens'] else "  Tokens: N/A")
+                print(f"  Percentage: {token['sniper_activity_percentage']}")
+                print(f"  SOL: {token['sniper_activity_sol']}")
+                print(f"Holders Info:")
+                print(f"  Total: {token['holders_total']}")
+                print(f"  Top 10%: {token['holders_top10_percentage']}")
+                print(f"  Top 25%: {token['holders_top25_percentage']}")
+                print(f"  Top 50%: {token['holders_top50_percentage']}")
+                print(f"Dev Info:")
+                print(f"  Holds: {token['dev_holds']}")
+                print(f"  Sold Times: {token['dev_sold_times']}")
+                print(f"  Sold SOL: {token['dev_sold_sol']}")
+                print(f"  Sold Percentage: {token['dev_sold_percentage']}")
+                
+                print("\nProficy Price Data:")
+                print(f"5min:")
+                print(f"  Price Change: {token['price_change_5m']}")
+                print(f"  Volume: ${token['volume_5m']:,.2f}" if token['volume_5m'] else "  Volume: N/A")
+                print(f"  B/S Ratio: {token['bs_ratio_5m']}")
+                print(f"1hour:")
+                print(f"  Price Change: {token['price_change_1h']}")
+                print(f"  Volume: ${token['volume_1h']:,.2f}" if token['volume_1h'] else "  Volume: N/A")
+                print(f"  B/S Ratio: {token['bs_ratio_1h']}")
 
-            # GEM Tokenų statistika
-            print("\n=== GEM TOKENS STATISTICS ===")
-            self.cursor.execute("""
-            SELECT 
-                t.address,
-                s.name,
-                s.symbol,
-                g.similarity_score,
-                g.confidence_level,
-                g.recommendation,
-                g.discovery_time
-            FROM tokens t
-            JOIN gem_tokens g ON t.address = g.token_address
-            JOIN soul_scanner_data s ON t.address = s.token_address
-            WHERE t.is_gem = TRUE
-            ORDER BY g.discovery_time DESC
-            """)
+            print("\n=== SUMMARY ===")
+            print(f"Total Tokens: {len(tokens)}")
+            self.cursor.execute("SELECT COUNT(*) FROM tokens WHERE is_gem = TRUE")
+            gem_count = self.cursor.fetchone()[0]
+            print(f"Total GEMs: {gem_count}")
             
-            gems = self.cursor.fetchall()
-            for gem in gems:
-                print("\n-----------------------------------")
-                print(f"GEM Address: {gem[0]}")
-                print(f"Name: {gem[1]}")
-                print(f"Symbol: {gem[2]}")
-                print(f"Similarity Score: {gem[3]}%")
-                print(f"Confidence Level: {gem[4]}%")
-                print(f"Recommendation: {gem[5]}")
-                print(f"Discovery Time: {gem[6]}")
-
-            print("\n=== DATABASE SUMMARY ===")
-            # Scanner statistika
-            self.cursor.execute("SELECT COUNT(*) FROM soul_scanner_data")
-            soul_scans = self.cursor.fetchone()[0]
-            self.cursor.execute("SELECT COUNT(*) FROM syrax_scanner_data")
-            syrax_scans = self.cursor.fetchone()[0]
-            self.cursor.execute("SELECT COUNT(*) FROM proficy_price_data")
-            proficy_scans = self.cursor.fetchone()[0]
-            
-            print(f"Total Soul Scanner Records: {soul_scans}")
-            print(f"Total Syrax Scanner Records: {syrax_scans}")
-            print(f"Total Proficy Price Records: {proficy_scans}")
-            
-            print("\n=====================")
+            print("\n================================================")
             
         except Exception as e:
-            logger.error(f"Error displaying database stats: {e}")
+            logger.error(f"Error displaying database stats: {str(e)}")
+            print(f"Database Error: {str(e)}")
 
 def initialize_database():
     """Inicializuoja duomenų bazę"""
