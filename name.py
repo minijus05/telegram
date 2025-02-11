@@ -1278,29 +1278,32 @@ class MLGEMAnalyzer:
 
     def add_gem_token(self, token_data: Dict):
         """
-        Prideda naują GEM token'ą į duomenų bazę ir atnaujina modelius
+        Prideda naują GEM token'ą į ML modelio duomenis ir atnaujina modelius
         
         Args:
-            token_data: Token'o duomenys
+            token_data: Token'o duomenys iš duomenų bazės
         """
         try:
-            print("\n=== Adding New GEM Token ===")
+            print("\n=== Adding GEM Token to ML Model ===")
             print(f"Token Address: {token_data.get('address')}")
             
-            # Pridedame į gem_tokens sąrašą
-            self.gem_tokens.append(token_data)
-            
-            # Perskaičiuojame intervalus
-            self.interval_analyzer.calculate_intervals(self.gem_tokens)
-            
-            # Permokiname modelį
-            self._train_main_model()
-            
-            print("New GEM token added and models updated successfully")
-            
+            # Pridedame į gem_tokens sąrašą ML analizei
+            if token_data not in self.gem_tokens:
+                self.gem_tokens.append(token_data)
+                
+                # Perskaičiuojame intervalus
+                self.interval_analyzer.calculate_intervals(self.gem_tokens)
+                
+                # Permokiname modelį
+                self._train_main_model()
+                
+                print("GEM token added to ML model and models updated successfully")
+            else:
+                print("Token already exists in ML model")
+                
         except Exception as e:
-            print(f"Error adding GEM token: {str(e)}")
-            logger.error(f"Failed to add GEM token: {e}")
+            print(f"Error adding GEM token to ML model: {str(e)}")
+            logger.error(f"Failed to add GEM token to ML model: {e}")
 
     def __str__(self):
         """String reprezentacija debuginimui"""
