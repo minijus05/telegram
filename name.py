@@ -1050,82 +1050,59 @@ class MLGEMAnalyzer:
             return np.array([])
 
     def _extract_feature_value(self, token_data: Dict, scanner: str, feature: str) -> float:
-        """Ištraukia parametro reikšmę iš nested token duomenų struktūros"""
+        """Ištraukia parametro reikšmę iš parsed token duomenų"""
         try:
             if scanner == 'soul':
-                if feature == 'liquidity_usd':
+                if feature == 'market_cap':
+                    return float(token_data.get('market_cap', 0))
+                elif feature == 'liquidity_usd':
                     return float(token_data.get('liquidity', {}).get('usd', 0))
                 elif feature == 'liquidity_sol':
                     return float(token_data.get('liquidity', {}).get('sol', 0))
-                elif feature == 'dex_status_paid':
-                    return float(token_data.get('dex_status', {}).get('paid', 0))
-                elif feature == 'dex_status_ads':
-                    return float(token_data.get('dex_status', {}).get('ads', 0))
+                elif feature in ['mint_status', 'freeze_status', 'lp_status']:
+                    return float(token_data.get(feature, False))
+                elif feature.startswith('dex_status_'):
+                    key = feature.replace('dex_status_', '')
+                    return float(token_data.get('dex_status', {}).get(key, False))
                 else:
-                    # Kiti Soul scanner parametrai
-                    value = token_data.get(feature, 0)
-            
+                    return float(token_data.get(feature, 0))
+                
             elif scanner == 'syrax':
                 if feature.startswith('dev_bought_'):
-                    # Pvz., dev_bought_tokens -> tokens
                     key = feature.replace('dev_bought_', '')
-                    value = token_data.get('dev_bought', {}).get(key, 0)
-                elif feature.startswith('bundle_'):
-                    # Normalūs bundle parametrai
-                    key = feature.replace('bundle_', '')
-                    value = token_data.get('bundle', {}).get(key, 0)
-                elif feature.startswith('notable_bundle_'):
-                    # Notable bundle parametrai
-                    key = feature.replace('notable_bundle_', '')
-                    value = token_data.get('notable_bundle', {}).get(key, 0)
+                    return float(token_data.get('dev_bought', {}).get(key, 0))
                 elif feature.startswith('holders_'):
-                    # Holders parametrai
                     key = feature.replace('holders_', '')
-                    value = token_data.get('holders', {}).get(key, 0)
-                elif feature.startswith('dev_sold_'):
-                    # Dev sold parametrai
-                    key = feature.replace('dev_sold_', '')
-                    value = token_data.get('dev_sold', {}).get(key, 0)
+                    return float(token_data.get('holders', {}).get(key, 0))
+                elif feature.startswith('bundle_'):
+                    key = feature.replace('bundle_', '')
+                    return float(token_data.get('bundle', {}).get(key, 0))
+                elif feature.startswith('notable_bundle_'):
+                    key = feature.replace('notable_bundle_', '')
+                    return float(token_data.get('notable_bundle', {}).get(key, 0))
                 elif feature.startswith('sniper_activity_'):
-                    # Sniper activity parametrai
                     key = feature.replace('sniper_activity_', '')
-                    value = token_data.get('sniper_activity', {}).get(key, 0)
+                    return float(token_data.get('sniper_activity', {}).get(key, 0))
+                elif feature.startswith('dev_sold_'):
+                    key = feature.replace('dev_sold_', '')
+                    return float(token_data.get('dev_sold', {}).get(key, 0))
                 else:
-                    # Kiti tiesioginiai Syrax parametrai
-                    value = token_data.get(feature, 0)
-            
+                    return float(token_data.get(feature, 0))
+                
             elif scanner == 'proficy':
-                # Proficy duomenys yra pagal laiko intervalus (5m arba 1h)
                 timeframe = '5m' if '5m' in feature else '1h'
                 metric = feature.replace(f'_{timeframe}', '')
                 
                 if metric == 'bs_ratio':
-                    ratio_str = token_data.get(timeframe, {}).get('bs_ratio', '0/0')
-                    if isinstance(ratio_str, str) and '/' in ratio_str:
-                        buy, sell = ratio_str.split('/')
-                        buy = float(buy.replace('K', '000')) if 'K' in buy else float(buy)
-                        sell = float(sell.replace('K', '000')) if 'K' in sell else float(sell)
-                        return buy / sell if sell != 0 else 0.0
+                    ratio = token_data.get(timeframe, {}).get('bs_ratio', '1/1')
+                    if isinstance(ratio, str) and '/' in ratio:
+                        buy, sell = map(lambda x: float(x.replace('K', '000')), ratio.split('/'))
+                        return buy / sell if sell != 0 else 1.0
                 else:
-                    value = token_data.get(timeframe, {}).get(metric, 0)
-            else:
-                value = 0.0
-
-            # Konvertuojame galutiną reikšmę
-            if value is None:
-                return 0.0
-            if isinstance(value, bool):
-                return float(value)
-            if isinstance(value, str):
-                if 'K' in value:
-                    return float(value.replace('K', '')) * 1000
-                if 'M' in value:
-                    return float(value.replace('M', '')) * 1000000
-                try:
-                    return float(value)
-                except ValueError:
-                    return 0.0
-            return float(value)
+                    return float(token_data.get(timeframe, {}).get(metric, 0))
+                    
+            print(f"Warning: Unknown feature {feature} for scanner {scanner}")
+            return 0.0
 
         except Exception as e:
             print(f"Error extracting {feature} from {scanner}: {str(e)}")
@@ -1151,6 +1128,11 @@ class MLGEMAnalyzer:
             }
 
         try:
+            # Prieš primary check
+            print("\nToken Data from Scanners:")
+            for scanner, data in token_data.items():
+                print(f"\n{scanner.upper()} Scanner Data:")
+                print(json.dumps(data, indent=2))
             # Pirminė parametrų patikra
             primary_check = self.interval_analyzer.check_primary_parameters(token_data)
             print("\nPrimary Check Results:")
@@ -1188,6 +1170,13 @@ class MLGEMAnalyzer:
             X_scaled = self.scaler.transform(X)
             anomaly_score = self.isolation_forest.score_samples(X_scaled)[0]
             similarity_score = (anomaly_score + 1) / 2 * 100  # Konvertuojame į procentus
+
+            # Po feature extraction
+            print("\nExtracted Features:")
+            for scanner, features in feature_details.items():
+                print(f"\n{scanner.upper()} Features:")
+                for feature, value in features.items():
+                    print(f"  {feature}: {value}")
 
             # Formuojame rezultatą
             result = {
@@ -1633,6 +1622,14 @@ class DatabaseManager:
                     if not already_gem:  # Įrašome į gem_tokens TIK jei dar nėra
                         print(f"🌟 Token {address} has reached {multiplier:.2f}x and is now marked as GEM!")
                         
+                        # TIK ČIA atnaujiname is_gem statusą, kai token'as tikrai tapo GEM
+                        self.cursor.execute('''
+                            UPDATE tokens 
+                            SET is_gem = TRUE,
+                            last_updated = CURRENT_TIMESTAMP
+                            WHERE address = ?
+                        ''', (address,))
+                        
                         # Gauname pradinius duomenis
                         self.cursor.execute('''
                             SELECT * FROM soul_scanner_data 
@@ -1765,14 +1762,7 @@ class DatabaseManager:
                 self.conn.commit()
                 print(f"[DEBUG] All changes committed successfully")
 
-                # TADA perkrauname GEM duomenis
-                if hasattr(self, 'gem_analyzer'):
-                    self.gem_analyzer.load_gem_data()
-                    print(f"[DEBUG] Loaded {len(self.gem_analyzer.gem_tokens)} GEM tokens after update")
-                elif hasattr(self, '_token_monitor') and hasattr(self._token_monitor, 'gem_analyzer'):
-                    self._token_monitor.gem_analyzer.load_gem_data()
-                    print(f"[DEBUG] Loaded {len(self._token_monitor.gem_analyzer.gem_tokens)} GEM tokens after update")
-                
+                                
                 # LOGGER 8: Galutinis patikrinimas
                 self.cursor.execute("SELECT * FROM tokens WHERE address = ?", (address,))
                 final_check = self.cursor.fetchone()
