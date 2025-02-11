@@ -133,6 +133,14 @@ class TokenMonitor:
                                 is_new_token=True
                             )
                             print(f"[SUCCESS] Saved NEW token data: {address}")
+
+                            # ANALIZUOJAME TIK NAUJUS TOKENUS
+                            analysis_result = self.gem_analyzer.analyze_token(scanner_data)
+
+                            if analysis_result['status'] == 'pending':
+                                print(f"\n[ANALYSIS PENDING] {analysis_result['message']}")
+                            else:
+                                await self._handle_analysis_results(analysis_result, scanner_data)
                             
                     elif is_from_token:
                         if not token_exists:
@@ -166,14 +174,7 @@ class TokenMonitor:
                                 self.gem_analyzer.add_gem_token(scanner_data)
                                 print(f"[GEM ADDED] Token marked as GEM: {address}")
                             
-                            # Bandome analizuoti
-                            analysis_result = self.gem_analyzer.analyze_token(scanner_data)
                             
-                            if analysis_result['status'] == 'pending':
-                                print(f"\n[ANALYSIS PENDING] {analysis_result['message']}")
-                            else:
-                                await self._handle_analysis_results(analysis_result, scanner_data)
-
         except Exception as e:
             logger.error(f"Error handling message: {e}")
             print(f"[ERROR] Message handling failed: {e}")
@@ -1474,10 +1475,10 @@ class DatabaseManager:
                                 
                                 -- ML rezultatai
                                 similarity_score, confidence_level, recommendation, avg_z_score, is_passed, discovery_time
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                                        100, 100, 'CONFIRMED GEM', 0.0, True, CURRENT_TIMESTAMP)
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                      ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                      100, 100, 'CONFIRMED GEM', 0.0, True, CURRENT_TIMESTAMP)
                         ''', (
                             address,
                             # Soul Scanner duomenys
@@ -1541,11 +1542,20 @@ class DatabaseManager:
                             
                                                     ))
 
+            
             # LOGGER 7: Įsitikiname, kad viskas išsaugota
             
             try:
                 self.conn.commit()
                 print(f"[DEBUG] All changes committed successfully")
+
+                # TADA perkrauname GEM duomenis
+                if hasattr(self, 'gem_analyzer'):
+                    self.gem_analyzer.load_gem_data()
+                    print(f"[DEBUG] Loaded {len(self.gem_analyzer.gem_tokens)} GEM tokens after update")
+                elif hasattr(self, '_token_monitor') and hasattr(self._token_monitor, 'gem_analyzer'):
+                    self._token_monitor.gem_analyzer.load_gem_data()
+                    print(f"[DEBUG] Loaded {len(self._token_monitor.gem_analyzer.gem_tokens)} GEM tokens after update")
                 
                 # LOGGER 8: Galutinis patikrinimas
                 self.cursor.execute("SELECT * FROM tokens WHERE address = ?", (address,))
