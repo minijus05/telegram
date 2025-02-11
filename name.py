@@ -43,7 +43,7 @@ class Config:
     MIN_GEMS_FOR_ANALYSIS = 1  # Minimalus GEM skaičius prieš pradedant analizę
 
     # GEM settings
-    GEM_MULTIPLIER = "2x"
+    GEM_MULTIPLIER = "1x"
     MIN_GEM_SCORE = 10
 
 class TokenMonitor:
@@ -1473,10 +1473,11 @@ class DatabaseManager:
                                 initial_price_change_1h, initial_volume_1h, initial_bs_ratio_1h,
                                 
                                 -- ML rezultatai
-                                similarity_score, confidence_level, recommendation
+                                similarity_score, confidence_level, recommendation, avg_z_score, is_passed, discovery_time
                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, 100, 'CONFIRMED GEM')
+                                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                                        100, 100, 'CONFIRMED GEM', 0.0, True, CURRENT_TIMESTAMP)
                         ''', (
                             address,
                             # Soul Scanner duomenys
@@ -1535,8 +1536,10 @@ class DatabaseManager:
                             initial_proficy_data.get('bs_ratio_5m', 0),
                             initial_proficy_data.get('price_change_1h', 0),
                             initial_proficy_data.get('volume_1h', 0),
+                            
                             initial_proficy_data.get('bs_ratio_1h', 0)
-                        ))
+                            
+                                                    ))
 
             # LOGGER 7: Įsitikiname, kad viskas išsaugota
             
