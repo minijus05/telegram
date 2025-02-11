@@ -46,6 +46,11 @@ class Config:
     GEM_MULTIPLIER = "1x"
     MIN_GEM_SCORE = 10
 
+    # Žinutes siuntimas
+    MIN_SIMILARITY_SCORE = 1.0
+    MIN_CONFIDENCE_LEVEL = 1.0
+    
+
 class TokenMonitor:
     def __init__(self, monitor_session=None, scanner_session=None):
         if isinstance(monitor_session, SQLiteSession):
@@ -276,18 +281,18 @@ class TokenMonitor:
             print(f"Confidence Level: {analysis_result['confidence_level']:.1f}%")
             print(f"Recommendation: {analysis_result['recommendation']}")
             
-            if analysis_result['similarity_score'] >= Config.MIN_GEM_SCORE:
-                print(f"\n🚀 HIGH GEM POTENTIAL DETECTED! (Score >= {Config.MIN_GEM_SCORE}%)")
+            # Čia įdedame naują kodą
+            if (analysis_result['similarity_score'] >= Config.MIN_SIMILARITY_SCORE and 
+                analysis_result['confidence_level'] >= Config.MIN_CONFIDENCE_LEVEL):
+                print(f"\n🚀 HIGH GEM POTENTIAL DETECTED!")
+                print(f"Similarity Score: {analysis_result['similarity_score']:.1f}% (>= {Config.MIN_SIMILARITY_SCORE}%)")
+                print(f"Confidence Level: {analysis_result['confidence_level']:.1f}% (>= {Config.MIN_CONFIDENCE_LEVEL}%)")
                 print(f"Sending alert to {Config.TELEGRAM_GEM_CHAT}")
-                message = self._format_telegram_message(analysis_result, scanner_data)
-                await self.telegram.send_message(
-                    Config.TELEGRAM_GEM_CHAT,
-                    message,
-                    parse_mode='Markdown'
-                )
-                logger.info(f"Sent potential GEM alert with {analysis_result['similarity_score']}% similarity")
+                await self.send_analysis_alert(analysis_result, scanner_data)
             else:
-                print(f"\n⚠️ GEM potential ({analysis_result['similarity_score']:.1f}%) below threshold ({Config.MIN_GEM_SCORE}%)")
+                print(f"\n⚠️ Token does not meet criteria:")
+                print(f"Similarity Score: {analysis_result['similarity_score']:.1f}% (need >= {Config.MIN_SIMILARITY_SCORE}%)")
+                print(f"Confidence Level: {analysis_result['confidence_level']:.1f}% (need >= {Config.MIN_CONFIDENCE_LEVEL}%)")
                 print("No alert sent")
         
         else:  # status == 'failed'
@@ -296,63 +301,99 @@ class TokenMonitor:
             print(f"Score: {analysis_result['score']}")
             print(f"Message: {analysis_result['message']}")
             
-            if 'details' in analysis_result:
-                print("\nFailed Parameters:")
-                for param, details in analysis_result['details'].items():
-                    print(f"- {param}: {details}")
+            # Pašalintas dubliuotas Failed Parameters rodymas
         
         print("\n" + "="*50)
         print("ANALYSIS COMPLETE")
         print("="*50 + "\n")
 
-    def _format_analysis_message(self, analysis_result, scanner_data):
+    def should_send_alert(self, similarity_score: float, confidence_level: float) -> bool:
+        """Tikrina ar reikia siųsti įspėjimą"""
+        return (similarity_score >= Config.MIN_SIMILARITY_SCORE and 
+                confidence_level >= Config.MIN_CONFIDENCE_LEVEL)
+
+    def get_current_time(self) -> tuple:
+        """Grąžina dabartinį UTC ir UTC+2 laiką"""
+        utc_now = datetime.now(timezone.utc)
+        local_time = utc_now + timedelta(hours=2)
+        return (
+            utc_now.strftime('%Y-%m-%d %H:%M:%S'),
+            local_time.strftime('%Y-%m-%d %H:%M:%S')
+        )
+
+    async def format_analysis_message(self, analysis_result: Dict, scanner_data: Dict) -> str:
         """Formatuoja analizės rezultatų žinutę"""
-        soul_data = scanner_data['soul']
-        token_address = soul_data['contract_address']
+        utc_time, local_time = self.get_current_time()
         
-        message = [
-            f"Analyzing Token: {soul_data['name']} (${soul_data['symbol']})",
-            f"Contract: `{token_address}`",
-            f"View: [GMGN.ai](https://gmgn.ai/sol/token/{token_address})",  # Markdown formatas linkui
-            f"\n--- PRIMARY PARAMETERS CHECK ---"
-        ]
+        soul_data = scanner_data['soul']
+        syrax_data = scanner_data['syrax']
+        proficy_data = scanner_data['proficy']
 
-        # Pirminių parametrų detales
-        for param, details in analysis_result['primary_check']['details'].items():
-            status = "✅" if details['in_range'] else "❌"
-            message.extend([
-                f"{status} {param}:",
-                f"    Value: {details['value']:.2f}",
-                f"    Range: {details['interval']['min']:.2f} - {details['interval']['max']:.2f}",
-                f"    Z-Score: {details['z_score']:.2f}"
-            ])
+        return f"""
+    🔍 *Token Analysis Results*
+    ⏰ UTC: {utc_time}
+    🌍 Local (UTC+2): {local_time}
 
-        # Analizės rezultatai
-        message.extend([
-            f"\n--- ANALYSIS RESULTS ---",
-            f"🎯 GEM Potential Score: {analysis_result['similarity_score']:.1f}%",
-            f"🎲 Confidence Level: {analysis_result['confidence_level']:.1f}%",
-            f"📊 Recommendation: {analysis_result['recommendation']}"
-        ])
+    *Token Address:*
+    `{soul_data['address']}`
+    • [View on GMGN](https://gmgn.ai/sol/token/{soul_data['address']})
 
-        # Market Metrics
-        message.extend([
-            f"\n--- MARKET METRICS ---",
-            f"💰 Market Cap: ${soul_data['market_cap']:,.2f}",
-            f"💧 Liquidity: ${soul_data['liquidity']['usd']:,.2f}",
-            f"👥 Holders: {scanner_data['syrax']['holders']['total']}"
-        ])
+    *Analysis Results:*
+    • Similarity Score: `{analysis_result['similarity_score']:.2f}%`
+    • Confidence Level: `{analysis_result['confidence_level']:.2f}%`
+    • Average Z-Score: `{analysis_result['avg_z_score']:.2f}`
+    • Recommendation: `{analysis_result['recommendation']}`
 
-        # Price Action
-        message.extend([
-            f"\n--- PRICE ACTION (1H) ---",
-            f"📈 Change: {scanner_data['proficy']['1h']['price_change']}%",
-            f"💎 Volume: ${scanner_data['proficy']['1h']['volume']:,.2f}",
-            f"⚖️ B/S Ratio: {scanner_data['proficy']['1h']['bs_ratio']}"
-        ])
+    *Primary Parameters:*
+    • Dev Created Tokens:
+      - Value: `{syrax_data['dev_created_tokens']}`
+      - Z-Score: `{analysis_result['primary_check']['details']['dev_created_tokens']['z_score']:.4f}`
 
-        return "\n".join(message)
+    • Similar Tokens:
+      - Name Count: `{syrax_data['same_name_count']}`
+      - Website Count: `{syrax_data['same_website_count']}`
+      - Telegram Count: `{syrax_data['same_telegram_count']}`
+      - Twitter Count: `{syrax_data['same_twitter_count']}`
 
+    • Dev Activity:
+      - Bought %: `{syrax_data['dev_bought']['percentage']}`%
+      - Bought Curve %: `{syrax_data['dev_bought']['curve_percentage']}`%
+      - Sold %: `{syrax_data['dev_sold']['percentage']}`%
+
+    • Holders Distribution:
+      - Total: `{syrax_data['holders']['total']}`
+      - Top 10%: `{syrax_data['holders']['top10_percentage']}`%
+      - Top 25%: `{syrax_data['holders']['top25_percentage']}`%
+      - Top 50%: `{syrax_data['holders']['top50_percentage']}`%
+
+    • Market Metrics:
+      - Market Cap: `${soul_data['market_cap']:,.2f}`
+      - Liquidity USD: `${soul_data['liquidity']['usd']:,.2f}`
+      - Volume (1h): `${proficy_data['1h']['volume']:,.2f}`
+      - Price Change (1h): `{proficy_data['1h']['price_change']}`%
+      - B/S Ratio (1h): `{float(proficy_data['1h']['bs_ratio']):.4f}`
+
+    #TokenAnalysis #Solana"""
+
+    async def send_analysis_alert(self, analysis_result: Dict, scanner_data: Dict):
+        """Siunčia analizės rezultatų žinutę į Telegram"""
+        if not self.should_send_alert(
+            analysis_result['similarity_score'], 
+            analysis_result['confidence_level']
+        ):
+            return
+        
+        message = await self.format_analysis_message(analysis_result, scanner_data)
+        
+        await self.telegram.send_message(
+            Config.TELEGRAM_GEM_CHAT,
+            message,
+            parse_mode='Markdown',
+            disable_web_page_preview=False
+        )
+        logger.info(f"Sent analysis alert with {analysis_result['similarity_score']}% similarity")
+
+    
     def _extract_token_addresses(self, message: str) -> List[str]:
         """Ištraukia token adresus iš žinutės"""
         matches = []
@@ -866,6 +907,37 @@ class MLIntervalAnalyzer:
         self.scaler = MinMaxScaler()
         self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
         self.intervals = {feature: {'min': float('inf'), 'max': float('-inf')} for feature in self.primary_features}
+
+    def _parse_ratio_value(self, ratio_str: str) -> float:
+        """Konvertuoja bs_ratio string į float reikšmę
+        
+        Args:
+            ratio_str: Formatas "X/Y" kur X ir Y gali turėti K sufiksą
+            
+        Returns:
+            float: Pirkimų/pardavimų santykis (buys/sells)
+        """
+        try:
+            buys, sells = ratio_str.split('/')
+            
+            # Konvertuojame K į tūkstančius
+            def convert_k(val: str) -> float:
+                val = val.strip()
+                if 'K' in val:
+                    return float(val.replace('K', '')) * 1000
+                return float(val)
+            
+            buys = convert_k(buys)
+            sells = convert_k(sells)
+            
+            # Grąžiname tikrąjį santykį buys/sells
+            if sells == 0:
+                return 1.0  # Jei nėra pardavimų, grąžiname 1
+                
+            return buys / sells
+            
+        except (ValueError, TypeError, ZeroDivisionError):
+            return 1.0  # Default santykis 1:1
         
     def calculate_intervals(self, successful_gems: List[Dict]):
         """Nustato intervalus naudojant ML iš sėkmingų GEM duomenų"""
@@ -878,11 +950,14 @@ class MLIntervalAnalyzer:
         for gem in successful_gems:
             features = []
             for feature in self.primary_features:
-                # Tiesiogiai imame reikšmę iš DB row
                 try:
-                    value = float(gem[feature] if gem[feature] is not None else 0)
+                    if feature == 'bs_ratio_1h':
+                        ratio_str = gem[feature] if gem[feature] is not None else '1/1'
+                        value = self._parse_ratio_value(ratio_str)
+                    else:
+                        value = float(gem[feature] if gem[feature] is not None else 0)
                 except (ValueError, TypeError):
-                    value = 0.0
+                    value = 1.0 if feature == 'bs_ratio_1h' else 0.0
                 features.append(value)
             X.append(features)
         
@@ -903,13 +978,33 @@ class MLIntervalAnalyzer:
                 q1 = np.percentile(normal_values, 25)
                 q3 = np.percentile(normal_values, 75)
                 iqr = q3 - q1
+                mean_val = np.mean(normal_values)
+                std_val = np.std(normal_values)
                 
-                self.intervals[feature] = {
-                    'min': max(0, q1 - 1.5 * iqr),
-                    'max': q3 + 1.5 * iqr,
-                    'mean': np.mean(normal_values),
-                    'std': np.std(normal_values)
-                }
+                if feature == 'price_change_1h':
+                    # Tik kainų pokytis gali būti neigiamas
+                    self.intervals[feature] = {
+                        'min': q1 - 1.5 * iqr,     # Leidžiame neigiamas reikšmes
+                        'max': q3 + 1.5 * iqr,
+                        'mean': mean_val,
+                        'std': std_val
+                    }
+                elif feature == 'bs_ratio_1h':
+                    # bs_ratio apdorojamas atskirai
+                    self.intervals[feature] = {
+                        'min': q1 - 1.5 * iqr,
+                        'max': q3 + 1.5 * iqr,
+                        'mean': mean_val,
+                        'std': std_val
+                    }
+                else:
+                    # Visi kiti parametrai turi būti teigiami
+                    self.intervals[feature] = {
+                        'min': max(0, q1 - 1.5 * iqr),
+                        'max': q3 + 1.5 * iqr,
+                        'mean': mean_val,
+                        'std': std_val
+                    }
         
         logger.info(f"ML intervalai atnaujinti sėkmingai su {len(successful_gems)} GEM'ais")
         return True
@@ -955,12 +1050,22 @@ class MLGEMAnalyzer:
         self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
         self.db = DatabaseManager()
         
-        # Apibrėžiame visus parametrus analizei pagal DB struktūrą
+        # Apibrėžiame pagrindinius parametrus analizei
+        self.primary_features = [
+            'dev_created_tokens', 'same_name_count', 'same_website_count',
+            'same_telegram_count', 'same_twitter_count', 'dev_bought_percentage',
+            'dev_bought_curve_percentage', 'dev_sold_percentage', 'holders_total',
+            'holders_top10_percentage', 'holders_top25_percentage',
+            'holders_top50_percentage', 'market_cap', 'liquidity_usd',
+            'volume_1h', 'price_change_1h', 'bs_ratio_1h'
+        ]
+        
+        # Apibrėžiame visus ML features pagal scannerius
         self.features = {
             'soul': [
                 'market_cap', 'ath_market_cap', 'liquidity_usd', 'liquidity_sol',
-                'mint_status', 'freeze_status', 'dex_status_paid', 'dex_status_ads',
-                'total_scans'
+                'mint_status', 'freeze_status', 'lp_status', 'dex_status_paid', 
+                'dex_status_ads', 'total_scans'
             ],
             'syrax': [
                 'dev_bought_tokens', 'dev_bought_sol', 'dev_bought_percentage',
@@ -1037,10 +1142,24 @@ class MLGEMAnalyzer:
         try:
             for token in self.gem_tokens:
                 features = []
-                for scanner, params in self.features.items():
-                    for param in params:
-                        value = self._extract_feature_value(token, scanner, param)
-                        features.append(value)
+                # Soul features
+                for feature in self.features['soul']:
+                    value = float(token.get(feature, 0))
+                    features.append(value)
+                
+                # Syrax features    
+                for feature in self.features['syrax']:
+                    value = float(token.get(feature, 0))
+                    features.append(value)
+                
+                # Proficy features    
+                for feature in self.features['proficy']:
+                    if 'bs_ratio' in feature:
+                        value = self._parse_bs_ratio(token.get(feature))
+                    else:
+                        value = float(token.get(feature, 0))
+                    features.append(value)
+                
                 data.append(features)
             
             print(f"Successfully prepared {len(data)} training samples")
@@ -1049,92 +1168,167 @@ class MLGEMAnalyzer:
             print(f"Error preparing training data: {str(e)}")
             return np.array([])
 
-    def _extract_feature_value(self, token_data: Dict, scanner: str, feature: str) -> float:
-        """Ištraukia parametro reikšmę iš parsed token duomenų"""
-        try:
-            if scanner == 'soul':
-                if feature == 'market_cap':
-                    return float(token_data.get('market_cap', 0))
-                elif feature == 'liquidity_usd':
-                    return float(token_data.get('liquidity', {}).get('usd', 0))
-                elif feature == 'liquidity_sol':
-                    return float(token_data.get('liquidity', {}).get('sol', 0))
-                elif feature in ['mint_status', 'freeze_status', 'lp_status']:
-                    return float(token_data.get(feature, False))
-                elif feature.startswith('dex_status_'):
-                    key = feature.replace('dex_status_', '')
-                    return float(token_data.get('dex_status', {}).get(key, False))
-                else:
-                    return float(token_data.get(feature, 0))
-                
-            elif scanner == 'syrax':
-                if feature.startswith('dev_bought_'):
-                    key = feature.replace('dev_bought_', '')
-                    return float(token_data.get('dev_bought', {}).get(key, 0))
-                elif feature.startswith('holders_'):
-                    key = feature.replace('holders_', '')
-                    return float(token_data.get('holders', {}).get(key, 0))
-                elif feature.startswith('bundle_'):
-                    key = feature.replace('bundle_', '')
-                    return float(token_data.get('bundle', {}).get(key, 0))
-                elif feature.startswith('notable_bundle_'):
-                    key = feature.replace('notable_bundle_', '')
-                    return float(token_data.get('notable_bundle', {}).get(key, 0))
-                elif feature.startswith('sniper_activity_'):
-                    key = feature.replace('sniper_activity_', '')
-                    return float(token_data.get('sniper_activity', {}).get(key, 0))
-                elif feature.startswith('dev_sold_'):
-                    key = feature.replace('dev_sold_', '')
-                    return float(token_data.get('dev_sold', {}).get(key, 0))
-                else:
-                    return float(token_data.get(feature, 0))
-                
-            elif scanner == 'proficy':
-                timeframe = '5m' if '5m' in feature else '1h'
-                metric = feature.replace(f'_{timeframe}', '')
-                
-                if metric == 'bs_ratio':
-                    ratio = token_data.get(timeframe, {}).get('bs_ratio', '1/1')
-                    if isinstance(ratio, str) and '/' in ratio:
-                        buy, sell = map(lambda x: float(x.replace('K', '000')), ratio.split('/'))
-                        return buy / sell if sell != 0 else 1.0
-                else:
-                    return float(token_data.get(timeframe, {}).get(metric, 0))
-                    
-            print(f"Warning: Unknown feature {feature} for scanner {scanner}")
-            return 0.0
-
-        except Exception as e:
-            print(f"Error extracting {feature} from {scanner}: {str(e)}")
-            return 0.0
-
     def analyze_token(self, token_data: Dict) -> Dict:
-        """Pilna token'o analizė"""
+        """
+        Pilna token'o analizė naudojant duomenis iš DB
+        
+        Args:
+            token_data: Token duomenų dictionary su soul, syrax ir proficy sekcijomis
+            
+        Returns:
+            Dict: Analizės rezultatai
+        """
         print("\n=== Starting Token Analysis ===")
         print(f"Available GEM tokens for analysis: {len(self.gem_tokens)}")
         
-        # Debug incoming data
-        print("\nReceived Token Data Structure:")
-        for scanner in ['soul', 'syrax', 'proficy']:
-            if scanner in token_data:
-                print(f"{scanner} data present with keys: {token_data[scanner].keys()}")
+        try:
+            # Pirma patikriname ar tai score užklausa
+            if 'score' in token_data:
+                return {
+                    'status': 'success',
+                    'stage': 'score',
+                    'score': float(token_data.get('score', 0))
+                }
+
+            # Gauname adresą iš soul sekcijos
+            if 'soul' in token_data:
+                address = token_data['soul'].get('contract_address')
+            else:
+                print(f"Error: Missing 'soul' section in token_data")
+                return {
+                    'status': 'failed',
+                    'stage': 'validation',
+                    'message': 'Missing soul scanner data'
+                }
+
+            if not address:
+                print(f"Error: No contract_address in soul section")
+                return {
+                    'status': 'failed',
+                    'stage': 'validation',
+                    'message': 'No contract address found'
+                }
+
+            print(f"Analyzing token: {address}")
         
-        # Patikriname ar turime pakankamai duomenų
-        if len(self.gem_tokens) < Config.MIN_GEMS_FOR_ANALYSIS:
-            return {
-                'status': 'pending',
-                'message': f'Reikia daugiau GEM duomenų (min: {Config.MIN_GEMS_FOR_ANALYSIS}, current: {len(self.gem_tokens)})',
-                'collected_gems': len(self.gem_tokens)
+            # Tikriname ar turime pakankamai GEM duomenų
+            if len(self.gem_tokens) < Config.MIN_GEMS_FOR_ANALYSIS:
+                return {
+                    'status': 'pending',
+                    'message': f'Reikia daugiau GEM duomenų (min: {Config.MIN_GEMS_FOR_ANALYSIS}, current: {len(self.gem_tokens)})',
+                    'collected_gems': len(self.gem_tokens)
+                }
+
+            # Gauname visus token duomenis iš DB
+            self.db.cursor.execute('''
+                SELECT 
+                    -- Soul Scanner duomenys
+                    s.name,
+                    s.symbol,
+                    s.market_cap,
+                    s.ath_market_cap,
+                    s.liquidity_usd,
+                    s.liquidity_sol,
+                    CAST(s.mint_status AS INTEGER) as mint_status,
+                    CAST(s.freeze_status AS INTEGER) as freeze_status,
+                    CAST(s.lp_status AS INTEGER) as lp_status,
+                    CAST(s.dex_status_paid AS INTEGER) as dex_status_paid,
+                    CAST(s.dex_status_ads AS INTEGER) as dex_status_ads,
+                    s.total_scans,
+                    s.social_link_x,
+                    s.social_link_tg,
+                    s.social_link_web,
+                    
+                    -- Syrax Scanner duomenys
+                    sy.dev_bought_tokens,
+                    sy.dev_bought_sol,
+                    sy.dev_bought_percentage,
+                    sy.dev_bought_curve_percentage,
+                    sy.dev_created_tokens,
+                    sy.same_name_count,
+                    sy.same_website_count,
+                    sy.same_telegram_count,
+                    sy.same_twitter_count,
+                    sy.bundle_count,
+                    sy.bundle_supply_percentage,
+                    sy.bundle_curve_percentage,
+                    sy.bundle_sol,
+                    sy.notable_bundle_count,
+                    sy.notable_bundle_supply_percentage,
+                    sy.notable_bundle_curve_percentage,
+                    sy.notable_bundle_sol,
+                    sy.sniper_activity_tokens,
+                    sy.sniper_activity_percentage,
+                    sy.sniper_activity_sol,
+                    sy.created_time,
+                    sy.traders_count,
+                    sy.traders_last_swap,
+                    sy.holders_total,
+                    sy.holders_top10_percentage,
+                    sy.holders_top25_percentage,
+                    sy.holders_top50_percentage,
+                    sy.dev_holds,
+                    sy.dev_sold_times,
+                    sy.dev_sold_sol,
+                    sy.dev_sold_percentage,
+                    
+                    -- Proficy Price duomenys
+                    p.price_change_5m,
+                    p.volume_5m,
+                    p.bs_ratio_5m,
+                    p.price_change_1h,
+                    p.volume_1h,
+                    p.bs_ratio_1h
+                FROM tokens t
+                JOIN soul_scanner_data s ON t.address = s.token_address
+                JOIN syrax_scanner_data sy ON t.address = sy.token_address
+                JOIN proficy_price_data p ON t.address = p.token_address
+                WHERE t.address = ?
+                ORDER BY s.scan_time DESC, sy.scan_time DESC, p.scan_time DESC
+                LIMIT 1
+            ''', (address,))
+
+            # Tęsti su likusiu kodu...
+            
+            row = self.db.cursor.fetchone()
+            if not row:
+                print(f"Error: No data found for token {address}")
+                return {
+                    'status': 'failed',
+                    'stage': 'data',
+                    'message': f'Token data not found in database for address: {address}'
+                }
+
+            # Konvertuojame į dictionary
+            db_data = dict(row)
+            
+            # Debug - spausdiname gautus duomenis
+            print("\nToken Data from Database:")
+            print(json.dumps(db_data, indent=2))
+
+            # Suformuojame primary check duomenis
+            primary_data = {
+                'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
+                'same_name_count': float(db_data.get('same_name_count', 0)),
+                'same_website_count': float(db_data.get('same_website_count', 0)),
+                'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
+                'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
+                'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
+                'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
+                'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0)),
+                'holders_total': float(db_data.get('holders_total', 0)),
+                'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
+                'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
+                'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
+                'market_cap': float(db_data.get('market_cap', 0)),
+                'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
+                'volume_1h': float(db_data.get('volume_1h', 0)),
+                'price_change_1h': float(db_data.get('price_change_1h', 0)),
+                'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
             }
 
-        try:
-            # Prieš primary check
-            print("\nToken Data from Scanners:")
-            for scanner, data in token_data.items():
-                print(f"\n{scanner.upper()} Scanner Data:")
-                print(json.dumps(data, indent=2))
             # Pirminė parametrų patikra
-            primary_check = self.interval_analyzer.check_primary_parameters(token_data)
+            primary_check = self.interval_analyzer.check_primary_parameters(primary_data)
             print("\nPrimary Check Results:")
             for param, details in primary_check['details'].items():
                 print(f"{param}:")
@@ -1151,32 +1345,84 @@ class MLGEMAnalyzer:
                     'message': 'Token nepraėjo pirminės filtracijos'
                 }
 
-            # ML analizė
+            # ML analizei ruošiame features pagal scannerius
             features = []
             feature_details = {}
             
-            # Renkame visus parametrus
-            for scanner, params in self.features.items():
-                scanner_data = token_data.get(scanner, {})
-                scanner_features = {}
-                for param in params:
-                    value = self._extract_feature_value(scanner_data, scanner, param)
-                    features.append(value)
-                    scanner_features[param] = value
-                feature_details[scanner] = scanner_features
+            # Soul scanner features
+            soul_features = {
+                'market_cap': float(db_data.get('market_cap', 0)),
+                'ath_market_cap': float(db_data.get('ath_market_cap', 0)),
+                'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
+                'liquidity_sol': float(db_data.get('liquidity_sol', 0)),
+                'mint_status': float(db_data.get('mint_status', 0)),
+                'freeze_status': float(db_data.get('freeze_status', 0)),
+                'lp_status': float(db_data.get('lp_status', 0)),
+                'dex_status_paid': float(db_data.get('dex_status_paid', 0)),
+                'dex_status_ads': float(db_data.get('dex_status_ads', 0)),
+                'total_scans': float(db_data.get('total_scans', 0))
+            }
+            features.extend(soul_features.values())
+            feature_details['soul'] = soul_features
 
-            # Normalizuojame ir analizuojame
+            # Syrax scanner features
+            syrax_features = {
+                'dev_bought_tokens': float(db_data.get('dev_bought_tokens', 0)),
+                'dev_bought_sol': float(db_data.get('dev_bought_sol', 0)),
+                'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
+                'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
+                'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
+                'same_name_count': float(db_data.get('same_name_count', 0)),
+                'same_website_count': float(db_data.get('same_website_count', 0)),
+                'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
+                'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
+                'bundle_count': float(db_data.get('bundle_count', 0)),
+                'bundle_supply_percentage': float(db_data.get('bundle_supply_percentage', 0)),
+                'bundle_curve_percentage': float(db_data.get('bundle_curve_percentage', 0)),
+                'bundle_sol': float(db_data.get('bundle_sol', 0)),
+                'notable_bundle_count': float(db_data.get('notable_bundle_count', 0)),
+                'notable_bundle_supply_percentage': float(db_data.get('notable_bundle_supply_percentage', 0)),
+                'notable_bundle_curve_percentage': float(db_data.get('notable_bundle_curve_percentage', 0)),
+                'notable_bundle_sol': float(db_data.get('notable_bundle_sol', 0)),
+                'sniper_activity_tokens': float(db_data.get('sniper_activity_tokens', 0)),
+                'sniper_activity_percentage': float(db_data.get('sniper_activity_percentage', 0)),
+                'sniper_activity_sol': float(db_data.get('sniper_activity_sol', 0)),
+                'holders_total': float(db_data.get('holders_total', 0)),
+                'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
+                'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
+                'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
+                'dev_holds': float(db_data.get('dev_holds', 0)),
+                'dev_sold_times': float(db_data.get('dev_sold_times', 0)),
+                'dev_sold_sol': float(db_data.get('dev_sold_sol', 0)),
+                'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0))
+            }
+            features.extend(syrax_features.values())
+            feature_details['syrax'] = syrax_features
+
+            # Proficy features
+            proficy_features = {
+                'price_change_5m': float(db_data.get('price_change_5m', 0)),
+                'volume_5m': float(db_data.get('volume_5m', 0)),
+                'bs_ratio_5m': self._parse_bs_ratio(db_data.get('bs_ratio_5m', '1/1')),
+                'price_change_1h': float(db_data.get('price_change_1h', 0)),
+                'volume_1h': float(db_data.get('volume_1h', 0)),
+                'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
+            }
+            features.extend(proficy_features.values())
+            feature_details['proficy'] = proficy_features
+
+            # Debug - ištraukti features
+            print("\nExtracted Features:")
+            for scanner, features_dict in feature_details.items():
+                print(f"\n{scanner.upper()} Features:")
+                for feature, value in features_dict.items():
+                    print(f"  {feature}: {value}")
+
+            # ML analizė
             X = np.array([features])
             X_scaled = self.scaler.transform(X)
             anomaly_score = self.isolation_forest.score_samples(X_scaled)[0]
-            similarity_score = (anomaly_score + 1) / 2 * 100  # Konvertuojame į procentus
-
-            # Po feature extraction
-            print("\nExtracted Features:")
-            for scanner, features in feature_details.items():
-                print(f"\n{scanner.upper()} Features:")
-                for feature, value in features.items():
-                    print(f"  {feature}: {value}")
+            similarity_score = (anomaly_score + 1) / 2 * 100
 
             # Formuojame rezultatą
             result = {
@@ -1203,6 +1449,25 @@ class MLGEMAnalyzer:
                 'stage': 'analysis',
                 'message': f'Analysis error: {str(e)}'
             }
+    
+    def _parse_bs_ratio(self, ratio_str: str) -> float:
+        """Konvertuoja B/S ratio string į float"""
+        try:
+            if not ratio_str or ratio_str == 'N/A':
+                return 1.0
+                
+            if isinstance(ratio_str, str) and '/' in ratio_str:
+                buy_str, sell_str = ratio_str.split('/')
+                
+                # Konvertuojame K į tūkstančius
+                buy = float(buy_str.replace('K', '')) * 1000 if 'K' in buy_str else float(buy_str)
+                sell = float(sell_str.replace('K', '')) * 1000 if 'K' in sell_str else float(sell_str)
+                
+                return buy / sell if sell != 0 else 1.0
+                
+            return float(ratio_str) if ratio_str else 1.0
+        except:
+            return 1.0
 
     def _generate_recommendation(self, similarity_score: float, z_score: float) -> str:
         """
@@ -1276,9 +1541,41 @@ class MLGEMAnalyzer:
             print("\n=== Adding GEM Token to ML Model ===")
             print(f"Token Address: {token_data.get('address')}")
             
+            # Gauname pilnus token duomenis iš DB
+            self.db.cursor.execute('''
+                SELECT 
+                    t.address,
+                    -- Soul Scanner duomenys
+                    s.name,
+                    s.symbol,
+                    s.market_cap,
+                    s.ath_market_cap,
+                    s.liquidity_usd,
+                    s.liquidity_sol,
+                    CAST(s.mint_status AS INTEGER) as mint_status,
+                    CAST(s.freeze_status AS INTEGER) as freeze_status,
+                    CAST(s.lp_status AS INTEGER) as lp_status,
+                    CAST(s.dex_status_paid AS INTEGER) as dex_status_paid,
+                    CAST(s.dex_status_ads AS INTEGER) as dex_status_ads,
+                    s.total_scans,
+                    -- Syrax Scanner duomenys
+                    sy.*,
+                    -- Proficy duomenys
+                    p.*
+                FROM tokens t
+                JOIN soul_scanner_data s ON t.address = s.token_address
+                JOIN syrax_scanner_data sy ON t.address = sy.token_address
+                JOIN proficy_price_data p ON t.address = p.token_address
+                WHERE t.address = ?
+                ORDER BY s.scan_time ASC, sy.scan_time ASC, p.scan_time ASC
+                LIMIT 1
+            ''', (token_data.get('address'),))
+            
+            db_data = dict(self.db.cursor.fetchone())
+            
             # Pridedame į gem_tokens sąrašą ML analizei
-            if token_data not in self.gem_tokens:
-                self.gem_tokens.append(token_data)
+            if db_data and db_data not in self.gem_tokens:
+                self.gem_tokens.append(db_data)
                 
                 # Perskaičiuojame intervalus
                 self.interval_analyzer.calculate_intervals(self.gem_tokens)
@@ -1288,7 +1585,7 @@ class MLGEMAnalyzer:
                 
                 print("GEM token added to ML model and models updated successfully")
             else:
-                print("Token already exists in ML model")
+                print("Token already exists in ML model or data not found")
                 
         except Exception as e:
             print(f"Error adding GEM token to ML model: {str(e)}")
