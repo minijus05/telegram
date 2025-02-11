@@ -214,10 +214,9 @@ class TokenMonitor:
         return None
 
     async def _handle_analysis_results(self, analysis_result, scanner_data):
-        """Formatuoja ir siunčia analizės rezultatus"""
-        # Visada rodome analizės rezultatus ekrane
+        """Formatuoja ir rodo analizės rezultatus"""
         print("\n" + "="*50)
-        print(f"ML ANALYSIS STARTED AT {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        print(f"ML ANALYSIS RESULTS AT {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
         print("="*50)
         
         if analysis_result['status'] == 'pending':
@@ -927,12 +926,13 @@ class MLIntervalAnalyzer:
 
 class MLGEMAnalyzer:
     def __init__(self):
+        """Inicializuoja ML GEM analizatorių"""
         self.interval_analyzer = MLIntervalAnalyzer()
         self.scaler = MinMaxScaler()
         self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
         self.db = DatabaseManager()
         
-        # Visi parametrai analizei
+        # Apibrėžiame visus parametrus analizei pagal DB struktūrą
         self.features = {
             'soul': [
                 'market_cap', 'ath_market_cap', 'liquidity_usd', 'liquidity_sol',
@@ -941,17 +941,20 @@ class MLGEMAnalyzer:
             ],
             'syrax': [
                 'dev_bought_tokens', 'dev_bought_sol', 'dev_bought_percentage',
-                'dev_bought_curve_percentage', 'bundle_count', 'bundle_supply_percentage',
+                'dev_bought_curve_percentage', 'dev_created_tokens',
+                'same_name_count', 'same_website_count', 'same_telegram_count',
+                'same_twitter_count', 'bundle_count', 'bundle_supply_percentage',
                 'bundle_curve_percentage', 'bundle_sol', 'notable_bundle_count',
                 'notable_bundle_supply_percentage', 'notable_bundle_curve_percentage',
-                'notable_bundle_sol', 'sniper_activity_tokens', 'sniper_activity_percentage',
-                'sniper_activity_sol', 'traders', 'holders_total', 'holders_top10',
-                'holders_top25', 'holders_top50', 'dev_holds', 'dev_sold_times',
-                'dev_sold_sol', 'dev_sold_percentage'
+                'notable_bundle_sol', 'sniper_activity_tokens',
+                'sniper_activity_percentage', 'sniper_activity_sol',
+                'holders_total', 'holders_top10_percentage',
+                'holders_top25_percentage', 'holders_top50_percentage',
+                'dev_holds', 'dev_sold_times', 'dev_sold_sol', 'dev_sold_percentage'
             ],
             'proficy': [
-                'price_5m', 'volume_5m', 'bs_ratio_5m',
-                'price_1h', 'volume_1h', 'bs_ratio_1h'
+                'price_change_5m', 'volume_5m', 'bs_ratio_5m',
+                'price_change_1h', 'volume_1h', 'bs_ratio_1h'
             ]
         }
         
@@ -959,145 +962,330 @@ class MLGEMAnalyzer:
         self.load_gem_data()
 
     def load_gem_data(self):
-        """Užkrauna išsaugotus GEM duomenis ir apmoko modelius"""
+        """Užkrauna GEM duomenis iš DB ir apmoko modelius"""
         try:
-            # Užkrauname iš duomenų bazės
+            print("\n=== Loading GEM Data ===")
+            # Gauname duomenis iš DB
             self.gem_tokens = self.db.load_gem_tokens()
+            print(f"Loaded {len(self.gem_tokens)} GEM tokens from database")
+            
             if self.gem_tokens:
-                # Apmokome intervalų analizatorių
+                print("\nFirst GEM token data example:")
+                first_token = self.gem_tokens[0]
+                print(f"Address: {first_token.get('address')}")
+                print(f"Name: {first_token.get('name')}")
+                print(f"Market Cap: {first_token.get('market_cap')}")
+                
+                # Apmokome modelius
                 self.interval_analyzer.calculate_intervals(self.gem_tokens)
-                # Apmokome pagrindinį ML modelį
-                self._train_main_model()
+                success = self._train_main_model()
+                print(f"Models trained successfully: {success}")
+            else:
+                print("WARNING: No GEM tokens found in database!")
+                
         except Exception as e:
+            print(f"ERROR loading GEM data: {str(e)}")
             logger.error(f"Error loading GEM data: {e}")
-
-    def add_gem_token(self, token_data: Dict):
-        """Prideda naują GEM ir atnaujina modelius"""
-        self.gem_tokens.append(token_data)
-        self.interval_analyzer.calculate_intervals(self.gem_tokens)
-        self._train_main_model()
-        
-        # Išsaugome intervalus į DB
-        self.db.save_ml_intervals(self.interval_analyzer.intervals)
 
     def _train_main_model(self):
         """Apmoko pagrindinį ML modelį su visais parametrais"""
-        if not self.gem_tokens or len(self.gem_tokens) < 3:
-            return False
+        try:
+            if not self.gem_tokens or len(self.gem_tokens) < 3:
+                print("Not enough GEM tokens for training (minimum 3 required)")
+                return False
 
-        X = self._prepare_training_data()
-        if len(X) > 0:
-            X_scaled = self.scaler.fit_transform(X)
-            self.isolation_forest.fit(X_scaled)
-            return True
-        return False
+            print("\n=== Training Main Model ===")
+            X = self._prepare_training_data()
+            if len(X) > 0:
+                print(f"Training with {len(X)} samples")
+                X_scaled = self.scaler.fit_transform(X)
+                self.isolation_forest.fit(X_scaled)
+                print("Model training completed successfully")
+                return True
+            return False
+        except Exception as e:
+            print(f"Error training model: {str(e)}")
+            return False
 
     def _prepare_training_data(self):
         """Paruošia duomenis ML modelio apmokymui"""
+        print("\n=== Preparing Training Data ===")
         data = []
-        for token in self.gem_tokens:
-            features = []
-            # Ištraukiame visus parametrus iš kiekvieno scannerio
-            for scanner, params in self.features.items():
-                for param in params:
-                    value = self._extract_feature_value(token, scanner, param)
-                    features.append(value)
-            data.append(features)
-        return np.array(data)
-
-    def _extract_feature_value(self, token, scanner, feature):
-        """Ištraukia parametro reikšmę iš token duomenų"""
         try:
-            value = token.get(scanner, {}).get(feature, 0)
-            # Konvertuojame boolean į int
+            for token in self.gem_tokens:
+                features = []
+                for scanner, params in self.features.items():
+                    for param in params:
+                        value = self._extract_feature_value(token, scanner, param)
+                        features.append(value)
+                data.append(features)
+            
+            print(f"Successfully prepared {len(data)} training samples")
+            return np.array(data)
+        except Exception as e:
+            print(f"Error preparing training data: {str(e)}")
+            return np.array([])
+
+    def _extract_feature_value(self, token_data: Dict, scanner: str, feature: str) -> float:
+        """Ištraukia parametro reikšmę iš nested token duomenų struktūros"""
+        try:
+            if scanner == 'soul':
+                if feature == 'liquidity_usd':
+                    return float(token_data.get('liquidity', {}).get('usd', 0))
+                elif feature == 'liquidity_sol':
+                    return float(token_data.get('liquidity', {}).get('sol', 0))
+                elif feature == 'dex_status_paid':
+                    return float(token_data.get('dex_status', {}).get('paid', 0))
+                elif feature == 'dex_status_ads':
+                    return float(token_data.get('dex_status', {}).get('ads', 0))
+                else:
+                    # Kiti Soul scanner parametrai
+                    value = token_data.get(feature, 0)
+            
+            elif scanner == 'syrax':
+                if feature.startswith('dev_bought_'):
+                    # Pvz., dev_bought_tokens -> tokens
+                    key = feature.replace('dev_bought_', '')
+                    value = token_data.get('dev_bought', {}).get(key, 0)
+                elif feature.startswith('bundle_'):
+                    # Normalūs bundle parametrai
+                    key = feature.replace('bundle_', '')
+                    value = token_data.get('bundle', {}).get(key, 0)
+                elif feature.startswith('notable_bundle_'):
+                    # Notable bundle parametrai
+                    key = feature.replace('notable_bundle_', '')
+                    value = token_data.get('notable_bundle', {}).get(key, 0)
+                elif feature.startswith('holders_'):
+                    # Holders parametrai
+                    key = feature.replace('holders_', '')
+                    value = token_data.get('holders', {}).get(key, 0)
+                elif feature.startswith('dev_sold_'):
+                    # Dev sold parametrai
+                    key = feature.replace('dev_sold_', '')
+                    value = token_data.get('dev_sold', {}).get(key, 0)
+                elif feature.startswith('sniper_activity_'):
+                    # Sniper activity parametrai
+                    key = feature.replace('sniper_activity_', '')
+                    value = token_data.get('sniper_activity', {}).get(key, 0)
+                else:
+                    # Kiti tiesioginiai Syrax parametrai
+                    value = token_data.get(feature, 0)
+            
+            elif scanner == 'proficy':
+                # Proficy duomenys yra pagal laiko intervalus (5m arba 1h)
+                timeframe = '5m' if '5m' in feature else '1h'
+                metric = feature.replace(f'_{timeframe}', '')
+                
+                if metric == 'bs_ratio':
+                    ratio_str = token_data.get(timeframe, {}).get('bs_ratio', '0/0')
+                    if isinstance(ratio_str, str) and '/' in ratio_str:
+                        buy, sell = ratio_str.split('/')
+                        buy = float(buy.replace('K', '000')) if 'K' in buy else float(buy)
+                        sell = float(sell.replace('K', '000')) if 'K' in sell else float(sell)
+                        return buy / sell if sell != 0 else 0.0
+                else:
+                    value = token_data.get(timeframe, {}).get(metric, 0)
+            else:
+                value = 0.0
+
+            # Konvertuojame galutiną reikšmę
+            if value is None:
+                return 0.0
             if isinstance(value, bool):
-                return int(value)
-            # Ištraukiame skaičius iš string'ų (pvz., "2.2K" -> 2200)
+                return float(value)
             if isinstance(value, str):
                 if 'K' in value:
                     return float(value.replace('K', '')) * 1000
                 if 'M' in value:
                     return float(value.replace('M', '')) * 1000000
+                try:
+                    return float(value)
+                except ValueError:
+                    return 0.0
             return float(value)
-        except (ValueError, TypeError):
+
+        except Exception as e:
+            print(f"Error extracting {feature} from {scanner}: {str(e)}")
             return 0.0
 
     def analyze_token(self, token_data: Dict) -> Dict:
         """Pilna token'o analizė"""
-        # Patikriname ar turime pakankamai duomenų analizei
+        print("\n=== Starting Token Analysis ===")
+        print(f"Available GEM tokens for analysis: {len(self.gem_tokens)}")
+        
+        # Debug incoming data
+        print("\nReceived Token Data Structure:")
+        for scanner in ['soul', 'syrax', 'proficy']:
+            if scanner in token_data:
+                print(f"{scanner} data present with keys: {token_data[scanner].keys()}")
+        
+        # Patikriname ar turime pakankamai duomenų
         if len(self.gem_tokens) < Config.MIN_GEMS_FOR_ANALYSIS:
             return {
                 'status': 'pending',
-                'message': f'Renkami duomenys. Reikia bent {Config.MIN_GEMS_FOR_ANALYSIS} GEMų analizei. Dabartinis kiekis: {len(self.gem_tokens)}',
+                'message': f'Reikia daugiau GEM duomenų (min: {Config.MIN_GEMS_FOR_ANALYSIS}, current: {len(self.gem_tokens)})',
                 'collected_gems': len(self.gem_tokens)
             }
 
-        # Toliau vykdome analizę tik jei turime pakankamai duomenų
-        primary_check = self.interval_analyzer.check_primary_parameters(token_data)
-        
-        if not primary_check['passed']:
-            return {
-                'status': 'failed',
-                'stage': 'primary',
-                'score': 0,
-                'details': primary_check['details'],
-                'message': 'Token nepraėjo pirminės filtracijos'
+        try:
+            # Pirminė parametrų patikra
+            primary_check = self.interval_analyzer.check_primary_parameters(token_data)
+            print("\nPrimary Check Results:")
+            for param, details in primary_check['details'].items():
+                print(f"{param}:")
+                print(f"  Value: {details['value']}")
+                print(f"  In Range: {details['in_range']}")
+                print(f"  Z-Score: {details['z_score']}")
+
+            if not primary_check['passed']:
+                return {
+                    'status': 'failed',
+                    'stage': 'primary',
+                    'score': 0,
+                    'details': primary_check['details'],
+                    'message': 'Token nepraėjo pirminės filtracijos'
+                }
+
+            # ML analizė
+            features = []
+            feature_details = {}
+            
+            # Renkame visus parametrus
+            for scanner, params in self.features.items():
+                scanner_data = token_data.get(scanner, {})
+                scanner_features = {}
+                for param in params:
+                    value = self._extract_feature_value(scanner_data, scanner, param)
+                    features.append(value)
+                    scanner_features[param] = value
+                feature_details[scanner] = scanner_features
+
+            # Normalizuojame ir analizuojame
+            X = np.array([features])
+            X_scaled = self.scaler.transform(X)
+            anomaly_score = self.isolation_forest.score_samples(X_scaled)[0]
+            similarity_score = (anomaly_score + 1) / 2 * 100  # Konvertuojame į procentus
+
+            # Formuojame rezultatą
+            result = {
+                'status': 'success',
+                'stage': 'full',
+                'primary_check': primary_check,
+                'similarity_score': similarity_score,
+                'feature_analysis': feature_details,
+                'recommendation': self._generate_recommendation(similarity_score, primary_check['avg_z_score']),
+                'confidence_level': self._calculate_confidence(similarity_score, primary_check['avg_z_score'])
             }
 
-        # 2. Pilna ML analizė
-        features = []
-        feature_details = {}
-        
-        # Renkame visus parametrus
-        for scanner, params in self.features.items():
-            scanner_data = {}
-            for param in params:
-                value = self._extract_feature_value(token_data, scanner, param)
-                features.append(value)
-                scanner_data[param] = value
-            feature_details[scanner] = scanner_data
+            print("\nAnalysis Results:")
+            print(f"Similarity Score: {similarity_score:.2f}%")
+            print(f"Confidence Level: {result['confidence_level']:.2f}%")
+            print(f"Recommendation: {result['recommendation']}")
 
-        # Normalizuojame ir analizuojame
-        X = np.array([features])
-        X_scaled = self.scaler.transform(X)
-        
-        # Gauname anomalijos score
-        anomaly_score = self.isolation_forest.score_samples(X_scaled)[0]
-        similarity_score = (anomaly_score + 1) / 2 * 100  # Konvertuojame į procentus
+            return result
 
-        # 3. Rezultatų paruošimas
-        result = {
-            'status': 'success',
-            'stage': 'full',
-            'primary_check': primary_check,
-            'similarity_score': similarity_score,
-            'feature_analysis': feature_details,
-            'recommendation': self._generate_recommendation(similarity_score, primary_check['avg_z_score']),
-            'confidence_level': self._calculate_confidence(similarity_score, primary_check['avg_z_score'])
-        }
-
-        return result
+        except Exception as e:
+            print(f"Error during token analysis: {str(e)}")
+            return {
+                'status': 'failed',
+                'stage': 'analysis',
+                'message': f'Analysis error: {str(e)}'
+            }
 
     def _generate_recommendation(self, similarity_score: float, z_score: float) -> str:
-        if similarity_score >= 80 and z_score < 1.5:
-            return "STRONG GEM POTENTIAL"
-        elif similarity_score >= 60 and z_score < 2:
-            return "MODERATE GEM POTENTIAL"
-        elif similarity_score >= 40:
-            return "WEAK GEM POTENTIAL"
-        return "NOT RECOMMENDED"
+        """
+        Generuoja rekomendaciją pagal panašumo rodiklį ir z-score
+        
+        Args:
+            similarity_score: Panašumo į GEM score (0-100)
+            z_score: Vidutinis Z-score iš pirminės patikros
+            
+        Returns:
+            str: Rekomendacija
+        """
+        try:
+            print("\n=== Generating Recommendation ===")
+            print(f"Similarity Score: {similarity_score:.2f}")
+            print(f"Average Z-Score: {z_score:.2f}")
+            
+            if similarity_score >= 80 and z_score < 1.5:
+                return "STRONG GEM POTENTIAL"
+            elif similarity_score >= 60 and z_score < 2:
+                return "MODERATE GEM POTENTIAL"
+            elif similarity_score >= 40:
+                return "WEAK GEM POTENTIAL"
+            return "NOT RECOMMENDED"
+            
+        except Exception as e:
+            print(f"Error generating recommendation: {str(e)}")
+            return "ERROR IN RECOMMENDATION"
 
     def _calculate_confidence(self, similarity_score: float, z_score: float) -> float:
-        # Skaičiuojame pasitikėjimo lygį
-        confidence = (similarity_score / 100) * (1 / (1 + z_score))
-        return min(max(confidence * 100, 0), 100)  # Konvertuojame į procentus
+        """
+        Apskaičiuoja pasitikėjimo lygį rekomendacija
+        
+        Args:
+            similarity_score: Panašumo į GEM score (0-100)
+            z_score: Vidutinis Z-score iš pirminės patikros
+            
+        Returns:
+            float: Pasitikėjimo lygis (0-100)
+        """
+        try:
+            print("\n=== Calculating Confidence Level ===")
+            
+            # Normalizuojame similarity_score į 0-1
+            norm_similarity = similarity_score / 100
+            
+            # Apskaičiuojame z-score įtaką (inverse relationship)
+            z_score_impact = 1 / (1 + abs(z_score))
+            
+            # Skaičiuojame bendrą pasitikėjimo lygį
+            confidence = norm_similarity * z_score_impact * 100
+            
+            # Apribojame rezultatą tarp 0 ir 100
+            confidence = min(max(confidence, 0), 100)
+            
+            print(f"Calculated Confidence: {confidence:.2f}%")
+            return confidence
+            
+        except Exception as e:
+            print(f"Error calculating confidence: {str(e)}")
+            return 0.0
 
     def add_gem_token(self, token_data: Dict):
-        """Prideda naują GEM ir atnaujina modelius"""
-        self.gem_tokens.append(token_data)
-        self.interval_analyzer.calculate_intervals(self.gem_tokens)
-        self._train_main_model()
-        self._save_gem_data()
+        """
+        Prideda naują GEM token'ą į duomenų bazę ir atnaujina modelius
+        
+        Args:
+            token_data: Token'o duomenys
+        """
+        try:
+            print("\n=== Adding New GEM Token ===")
+            print(f"Token Address: {token_data.get('address')}")
+            
+            # Pridedame į gem_tokens sąrašą
+            self.gem_tokens.append(token_data)
+            
+            # Perskaičiuojame intervalus
+            self.interval_analyzer.calculate_intervals(self.gem_tokens)
+            
+            # Permokiname modelį
+            self._train_main_model()
+            
+            print("New GEM token added and models updated successfully")
+            
+        except Exception as e:
+            print(f"Error adding GEM token: {str(e)}")
+            logger.error(f"Failed to add GEM token: {e}")
+
+    def __str__(self):
+        """String reprezentacija debuginimui"""
+        return f"MLGEMAnalyzer(gems={len(self.gem_tokens)}, features={sum(len(f) for f in self.features.values())})"
+
+    def __repr__(self):
+        """Reprezentacija debuginimui"""
+        return self.__str__()
 
     
             
@@ -1595,6 +1783,7 @@ class DatabaseManager:
     def load_gem_tokens(self) -> List[Dict]:
         """Užkrauna visus GEM token'us su jų pradiniais duomenimis ML analizei"""
         try:
+            print("\n=== LOADING GEM TOKENS FROM DATABASE ===")
             self.cursor.execute('''
             SELECT 
                 t.address,
@@ -1685,9 +1874,44 @@ class DatabaseManager:
             ORDER BY g.discovery_time DESC
             ''')
             rows = self.cursor.fetchall()
-            return [dict(row) for row in rows]
+            tokens = [dict(row) for row in rows]
+            
+            print(f"\nLoaded {len(tokens)} GEM tokens")
+            
+            # Išsami informacija apie kiekvieną token'ą
+            for i, token in enumerate(tokens, 1):
+                print(f"\n=== GEM Token #{i} ===")
+                print(f"Address: {token.get('address')}")
+                print(f"First Seen: {token.get('first_seen')}")
+                
+                print("\nSoul Scanner Data:")
+                print(f"Name: {token.get('name')}")
+                print(f"Symbol: {token.get('symbol')}")
+                print(f"Market Cap: {token.get('market_cap')}")
+                print(f"Liquidity USD: {token.get('liquidity_usd')}")
+                
+                print("\nSyrax Scanner Data:")
+                print(f"Dev Created Tokens: {token.get('dev_created_tokens')}")
+                print(f"Holders Total: {token.get('holders_total')}")
+                print(f"Top 10% Holders: {token.get('holders_top10_percentage')}")
+                
+                print("\nProficy Data:")
+                print(f"Price Change 1h: {token.get('price_change_1h')}")
+                print(f"Volume 1h: {token.get('volume_1h')}")
+                print(f"B/S Ratio 1h: {token.get('bs_ratio_1h')}")
+            
+            # Patikrinimas ar yra null reikšmių
+            print("\n=== Checking for NULL values ===")
+            for token in tokens:
+                for key, value in token.items():
+                    if value is None:
+                        print(f"NULL value found in {token['address']} for field: {key}")
+            
+            return tokens
+            
         except Exception as e:
             logger.error(f"Error loading GEM tokens: {e}")
+            print(f"\nERROR loading GEM tokens: {str(e)}")
             return []
     
         
@@ -1907,6 +2131,73 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error displaying database stats: {str(e)}")
             print(f"Database Error: {str(e)}")
+
+    def diagnose_gem_data(self):
+        """Diagnostika GEM duomenų"""
+        try:
+            print("\n=== GEM Data Diagnostics ===")
+            
+            # Tikriname tokens lentelę
+            self.cursor.execute("""
+                SELECT COUNT(*) as total_tokens,
+                       SUM(CASE WHEN is_gem = TRUE THEN 1 ELSE 0 END) as gem_tokens
+                FROM tokens
+            """)
+            token_counts = dict(self.cursor.fetchone())
+            print(f"\nTokens table:")
+            print(f"Total tokens: {token_counts['total_tokens']}")
+            print(f"GEM tokens: {token_counts['gem_tokens']}")
+            
+            # Tikriname soul_scanner_data
+            self.cursor.execute("""
+                SELECT COUNT(DISTINCT token_address) as tokens,
+                       COUNT(*) as total_records
+                FROM soul_scanner_data
+                WHERE token_address IN (SELECT address FROM tokens WHERE is_gem = TRUE)
+            """)
+            soul_counts = dict(self.cursor.fetchone())
+            print(f"\nSoul Scanner Data:")
+            print(f"Unique GEM tokens: {soul_counts['tokens']}")
+            print(f"Total records: {soul_counts['total_records']}")
+            
+            # Tikriname syrax_scanner_data
+            self.cursor.execute("""
+                SELECT COUNT(DISTINCT token_address) as tokens,
+                       COUNT(*) as total_records
+                FROM syrax_scanner_data
+                WHERE token_address IN (SELECT address FROM tokens WHERE is_gem = TRUE)
+            """)
+            syrax_counts = dict(self.cursor.fetchone())
+            print(f"\nSyrax Scanner Data:")
+            print(f"Unique GEM tokens: {syrax_counts['tokens']}")
+            print(f"Total records: {syrax_counts['total_records']}")
+            
+            # Tikriname proficy_price_data
+            self.cursor.execute("""
+                SELECT COUNT(DISTINCT token_address) as tokens,
+                       COUNT(*) as total_records
+                FROM proficy_price_data
+                WHERE token_address IN (SELECT address FROM tokens WHERE is_gem = TRUE)
+            """)
+            proficy_counts = dict(self.cursor.fetchone())
+            print(f"\nProficy Price Data:")
+            print(f"Unique GEM tokens: {proficy_counts['tokens']}")
+            print(f"Total records: {proficy_counts['total_records']}")
+            
+            # Tikriname bendrus įrašus
+            self.cursor.execute("""
+                SELECT COUNT(DISTINCT t.address)
+                FROM tokens t
+                JOIN soul_scanner_data s ON t.address = s.token_address
+                JOIN syrax_scanner_data sy ON t.address = sy.token_address
+                JOIN proficy_price_data p ON t.address = p.token_address
+                WHERE t.is_gem = TRUE
+            """)
+            common_tokens = self.cursor.fetchone()[0]
+            print(f"\nTokens with data in ALL scanners: {common_tokens}")
+            
+        except Exception as e:
+            print(f"Error during diagnostics: {str(e)}")
 
 def initialize_database():
     """Inicializuoja duomenų bazę"""
