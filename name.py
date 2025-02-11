@@ -227,14 +227,48 @@ class TokenMonitor:
         elif analysis_result['status'] == 'success':
             soul_data = scanner_data['soul']
             print(f"\nAnalyzing Token: {soul_data['name']} (${soul_data['symbol']})")
-            print(f"Contract: {soul_data['contract_address']}")
+            print(f"Contract: {soul_data['address']}")
             
             print("\n--- PRIMARY PARAMETERS CHECK ---")
+            syrax_data = scanner_data['syrax']
+            
+            # Syrax Scanner Parametrai
+            print("\nSyrax Scanner Parameters:")
+            print(f"Dev Created Tokens: {syrax_data['dev_created_tokens']}")
+            print(f"Similar Tokens:")
+            print(f"- Same Name: {syrax_data['same_name_count']}")
+            print(f"- Same Website: {syrax_data['same_website_count']}")
+            print(f"- Same Telegram: {syrax_data['same_telegram_count']}")
+            print(f"- Same Twitter: {syrax_data['same_twitter_count']}")
+            print(f"Dev Activity:")
+            print(f"- Bought %: {syrax_data['dev_bought_percentage']}")
+            print(f"- Bought Curve %: {syrax_data['dev_bought_curve_percentage']}")
+            print(f"- Sold %: {syrax_data['dev_sold_percentage']}")
+            print(f"Holders Distribution:")
+            print(f"- Total Holders: {syrax_data['holders_total']}")
+            print(f"- Top 10% Hold: {syrax_data['holders_top10_percentage']}%")
+            print(f"- Top 25% Hold: {syrax_data['holders_top25_percentage']}%")
+            print(f"- Top 50% Hold: {syrax_data['holders_top50_percentage']}%")
+
+            # Soul Scanner Parametrai
+            print("\nSoul Scanner Parameters:")
+            print(f"Market Cap: ${soul_data['market_cap']:,.2f}")
+            print(f"Liquidity USD: ${soul_data['liquidity_usd']:,.2f}")
+
+            # Proficy Parametrai
+            proficy_data = scanner_data['proficy']
+            print("\nProficy Parameters:")
+            print(f"1h Volume: ${proficy_data['volume_1h']:,.2f}")
+            print(f"1h Price Change: {proficy_data['price_change_1h']}%")
+            print(f"1h B/S Ratio: {proficy_data['bs_ratio_1h']}")
+            
+            # Parametrų intervalų patikrinimas
+            print("\n--- PARAMETER RANGES CHECK ---")
             for param, details in analysis_result['primary_check']['details'].items():
                 status = "✅" if details['in_range'] else "❌"
-                print(f"{status} {param}:")
-                print(f"    Value: {details['value']:.2f}")
-                print(f"    Range: {details['interval']['min']:.2f} - {details['interval']['max']:.2f}")
+                print(f"\n{status} {param}:")
+                print(f"    Current Value: {details['value']:.2f}")
+                print(f"    Valid Range: {details['interval']['min']:.2f} - {details['interval']['max']:.2f}")
                 print(f"    Z-Score: {details['z_score']:.2f}")
             
             print("\n--- ANALYSIS RESULTS ---")
@@ -242,7 +276,6 @@ class TokenMonitor:
             print(f"Confidence Level: {analysis_result['confidence_level']:.1f}%")
             print(f"Recommendation: {analysis_result['recommendation']}")
             
-            # Siunčiame žinutę tik jei score >= MIN_GEM_SCORE
             if analysis_result['similarity_score'] >= Config.MIN_GEM_SCORE:
                 print(f"\n🚀 HIGH GEM POTENTIAL DETECTED! (Score >= {Config.MIN_GEM_SCORE}%)")
                 print(f"Sending alert to {Config.TELEGRAM_GEM_CHAT}")
@@ -256,16 +289,6 @@ class TokenMonitor:
             else:
                 print(f"\n⚠️ GEM potential ({analysis_result['similarity_score']:.1f}%) below threshold ({Config.MIN_GEM_SCORE}%)")
                 print("No alert sent")
-            
-            print("\n--- MARKET METRICS ---")
-            print(f"Market Cap: ${soul_data['market_cap']:,.2f}")
-            print(f"Liquidity: ${soul_data['liquidity']['usd']:,.2f}")
-            print(f"Holders: {scanner_data['syrax']['holders']['total']}")
-            
-            print("\n--- PRICE ACTION (1H) ---")
-            print(f"Change: {scanner_data['proficy']['1h']['price_change']}%")
-            print(f"Volume: ${scanner_data['proficy']['1h']['volume']:,.2f}")
-            print(f"B/S Ratio: {scanner_data['proficy']['1h']['bs_ratio']}")
         
         else:  # status == 'failed'
             print("\n[ANALYSIS FAILED]")
@@ -1595,14 +1618,16 @@ class DatabaseManager:
                     print(f"{'='*50}\n")
                     
                     # Jei pasiekė GEM_MULTIPLIER
-                    if multiplier >= float(Config.GEM_MULTIPLIER.rstrip('x')):
-                        # Pažymime kaip GEM
-                        self.cursor.execute('''
-                            UPDATE tokens 
-                            SET is_gem = TRUE 
-                            WHERE address = ?
-                        ''', (address,))
-                        
+                    # Patikriname ar šis token'as jau yra gem_tokens lentelėje
+                    self.cursor.execute('''
+                        SELECT token_address 
+                        FROM gem_tokens 
+                        WHERE token_address = ?
+                    ''', (address,))
+                    
+                    already_gem = self.cursor.fetchone() is not None
+                    
+                    if not already_gem:  # Įrašome į gem_tokens TIK jei dar nėra
                         print(f"🌟 Token {address} has reached {multiplier:.2f}x and is now marked as GEM!")
                         
                         # Gauname pradinius duomenis
@@ -1783,7 +1808,11 @@ class DatabaseManager:
     def load_gem_tokens(self) -> List[Dict]:
         """Užkrauna visus GEM token'us su jų pradiniais duomenimis ML analizei"""
         try:
+            print("\n=== Running GEM Data Diagnostics ===")
+            self.diagnose_gem_data()  # Pridedame diagnostiką
             print("\n=== LOADING GEM TOKENS FROM DATABASE ===")
+
+           
             self.cursor.execute('''
             SELECT 
                 t.address,
@@ -1877,7 +1906,7 @@ class DatabaseManager:
             tokens = [dict(row) for row in rows]
             
             print(f"\nLoaded {len(tokens)} GEM tokens")
-            
+        
             # Išsami informacija apie kiekvieną token'ą
             for i, token in enumerate(tokens, 1):
                 print(f"\n=== GEM Token #{i} ===")
@@ -1888,19 +1917,78 @@ class DatabaseManager:
                 print(f"Name: {token.get('name')}")
                 print(f"Symbol: {token.get('symbol')}")
                 print(f"Market Cap: {token.get('market_cap')}")
+                print(f"ATH Market Cap: {token.get('ath_market_cap')}")
                 print(f"Liquidity USD: {token.get('liquidity_usd')}")
+                print(f"Liquidity SOL: {token.get('liquidity_sol')}")
+                print(f"Mint Status: {token.get('mint_status')}")
+                print(f"Freeze Status: {token.get('freeze_status')}")
+                print(f"LP Status: {token.get('lp_status')}")
+                print(f"DEX Status Paid: {token.get('dex_status_paid')}")
+                print(f"DEX Status Ads: {token.get('dex_status_ads')}")
+                print(f"Total Scans: {token.get('total_scans')}")
+                print(f"Social X: {token.get('social_link_x')}")
+                print(f"Social TG: {token.get('social_link_tg')}")
+                print(f"Social Web: {token.get('social_link_web')}")
                 
                 print("\nSyrax Scanner Data:")
+                print("Dev Bought:")
+                print(f"- Tokens: {token.get('dev_bought_tokens')}")
+                print(f"- SOL: {token.get('dev_bought_sol')}")
+                print(f"- Percentage: {token.get('dev_bought_percentage')}")
+                print(f"- Curve %: {token.get('dev_bought_curve_percentage')}")
                 print(f"Dev Created Tokens: {token.get('dev_created_tokens')}")
-                print(f"Holders Total: {token.get('holders_total')}")
-                print(f"Top 10% Holders: {token.get('holders_top10_percentage')}")
+                print("Similar Tokens:")
+                print(f"- Name: {token.get('same_name_count')}")
+                print(f"- Website: {token.get('same_website_count')}")
+                print(f"- Telegram: {token.get('same_telegram_count')}")
+                print(f"- Twitter: {token.get('same_twitter_count')}")
+                print("Bundle Info:")
+                print(f"- Count: {token.get('bundle_count')}")
+                print(f"- Supply %: {token.get('bundle_supply_percentage')}")
+                print(f"- Curve %: {token.get('bundle_curve_percentage')}")
+                print(f"- SOL: {token.get('bundle_sol')}")
+                print("Notable Bundle:")
+                print(f"- Count: {token.get('notable_bundle_count')}")
+                print(f"- Supply %: {token.get('notable_bundle_supply_percentage')}")
+                print(f"- Curve %: {token.get('notable_bundle_curve_percentage')}")
+                print(f"- SOL: {token.get('notable_bundle_sol')}")
+                print("Sniper Activity:")
+                print(f"- Tokens: {token.get('sniper_activity_tokens')}")
+                print(f"- Percentage: {token.get('sniper_activity_percentage')}")
+                print(f"- SOL: {token.get('sniper_activity_sol')}")
+                print(f"Created Time: {token.get('created_time')}")
+                print(f"Traders Count: {token.get('traders_count')}")
+                print(f"Last Swap: {token.get('traders_last_swap')}")
+                print("Holders:")
+                print(f"- Total: {token.get('holders_total')}")
+                print(f"- Top 10%: {token.get('holders_top10_percentage')}")
+                print(f"- Top 25%: {token.get('holders_top25_percentage')}")
+                print(f"- Top 50%: {token.get('holders_top50_percentage')}")
+                print("Dev Info:")
+                print(f"- Holds: {token.get('dev_holds')}")
+                print(f"- Sold Times: {token.get('dev_sold_times')}")
+                print(f"- Sold SOL: {token.get('dev_sold_sol')}")
+                print(f"- Sold %: {token.get('dev_sold_percentage')}")
                 
                 print("\nProficy Data:")
-                print(f"Price Change 1h: {token.get('price_change_1h')}")
-                print(f"Volume 1h: {token.get('volume_1h')}")
-                print(f"B/S Ratio 1h: {token.get('bs_ratio_1h')}")
+                print("5min:")
+                print(f"- Price Change: {token.get('price_change_5m')}")
+                print(f"- Volume: {token.get('volume_5m')}")
+                print(f"- B/S Ratio: {token.get('bs_ratio_5m')}")
+                print("1hour:")
+                print(f"- Price Change: {token.get('price_change_1h')}")
+                print(f"- Volume: {token.get('volume_1h')}")
+                print(f"- B/S Ratio: {token.get('bs_ratio_1h')}")
+
+                print("\nAnalysis Results:")
+                print(f"Similarity Score: {token.get('similarity_score')}")
+                print(f"Confidence Level: {token.get('confidence_level')}")
+                print(f"Recommendation: {token.get('recommendation')}")
+                print(f"Avg Z-Score: {token.get('avg_z_score')}")
+                print(f"Is Passed: {token.get('is_passed')}")
+                print(f"Discovery Time: {token.get('discovery_time')}")
             
-            # Patikrinimas ar yra null reikšmių
+            # Palikta originali NULL reikšmių patikra
             print("\n=== Checking for NULL values ===")
             for token in tokens:
                 for key, value in token.items():
