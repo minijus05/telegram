@@ -31,7 +31,7 @@ class Config:
     TELEGRAM_API_HASH = 'bd0054bc5393af360bc3930a27403c33'
     TELEGRAM_SOURCE_CHATS = ['@solearlytrending', '@botubotass']
     TELEGRAM_DEST_CHAT = '@smartas1'
-    TELEGRAM_GEM_CHAT = '@potentialGems'
+    TELEGRAM_GEM_CHAT = '@smartas1'
     
     # Scanner settings
     SCANNER_GROUP = '@skaneriss'
@@ -43,7 +43,7 @@ class Config:
     MIN_GEMS_FOR_ANALYSIS = 1  # Minimalus GEM skaičius prieš pradedant analizę
 
     # GEM settings
-    GEM_MULTIPLIER = "1x"
+    GEM_MULTIPLIER = "2x"
     MIN_GEM_SCORE = 10
 
 class TokenMonitor:
@@ -778,12 +778,15 @@ class TokenMonitor:
             
             def convert_volume(volume_str: str) -> float:
                 """Helper function to convert volume with K or M suffix"""
-                volume_str = volume_str.replace('$', '')
-                if 'M' in volume_str:
-                    return float(volume_str.replace('M', '')) * 1000000
-                elif 'K' in volume_str:
-                    return float(volume_str.replace('K', '')) * 1000
-                return float(volume_str)
+                try:
+                    volume_str = volume_str.replace('$', '')
+                    if 'M' in volume_str:
+                        return float(volume_str.replace('M', '')) * 1000000
+                    elif 'K' in volume_str:
+                        return float(volume_str.replace('K', '')) * 1000
+                    return float(volume_str)
+                except (ValueError, TypeError):
+                    return 0  # Grąžina 0 jei konvertavimas nepavyksta
             
             for line in lines:
                 if 'Price' in line and 'Volume' in line and 'B/S' in line:
@@ -1177,7 +1180,7 @@ async def main():
         print(f"Current User's Login: minijus05\n")
 
         # Rodyti duomenų bazės statistiką po inicializacijos
-        monitor.db.display_database_stats()
+        #monitor.db.display_database_stats()
 
         @monitor.telegram.on(events.NewMessage(chats=Config.TELEGRAM_SOURCE_CHATS))
         async def message_handler(event):
@@ -1330,10 +1333,10 @@ class DatabaseManager:
                                 )
                             ''', (
                                 address,
-                                syrax_data.get('dev_bought', {}).get('tokens'),  # Pataisyta struktūra
-                                syrax_data.get('dev_bought', {}).get('sol'),
-                                syrax_data.get('dev_bought', {}).get('percentage'),
-                                syrax_data.get('dev_bought', {}).get('curve_percentage'),
+                                syrax_data.get('dev_bought', {}).get('tokens', 0),  # Pataisyta struktūra
+                                syrax_data.get('dev_bought', {}).get('sol', 0),
+                                syrax_data.get('dev_bought', {}).get('percentage', 0),
+                                syrax_data.get('dev_bought', {}).get('curve_percentage', 0),
                                 syrax_data.get('dev_created_tokens'),
                                 syrax_data.get('same_name_count'),
                                 syrax_data.get('same_website_count'),
@@ -1494,10 +1497,10 @@ class DatabaseManager:
                             initial_soul_data.get('social_link_web', ''),
                             
                             # Syrax Scanner duomenys
-                            initial_syrax_data.get('dev_bought_tokens', 0),
-                            initial_syrax_data.get('dev_bought_sol', 0),
-                            initial_syrax_data.get('dev_bought_percentage', 0),
-                            initial_syrax_data.get('dev_bought_curve_percentage', 0),
+                            initial_syrax_data.get('dev_bought', {}).get('tokens', 0),
+                            initial_syrax_data.get('dev_bought', {}).get('sol', 0),
+                            initial_syrax_data.get('dev_bought', {}).get('percentage', 0),
+                            initial_syrax_data.get('dev_bought', {}).get('curve_percentage', 0),
                             initial_syrax_data.get('dev_created_tokens', 0),
                             initial_syrax_data.get('same_name_count', 0),
                             initial_syrax_data.get('same_website_count', 0),
@@ -1829,7 +1832,13 @@ class DatabaseManager:
                 
                 print("\nSyrax Scanner Data:")
                 print(f"Dev Bought:")
-                print(f"  Tokens: {token['dev_bought_tokens']:,.2f}" if token['dev_bought_tokens'] else "  Tokens: N/A")
+                if token['dev_bought_tokens']:
+                    try:
+                        print(f"  Tokens: {float(token['dev_bought_tokens']):,.2f}")
+                    except (ValueError, TypeError):
+                        print(f"  Tokens: {token['dev_bought_tokens']}")
+                else:
+                    print("  Tokens: N/A")
                 print(f"  SOL: {token['dev_bought_sol']}")
                 print(f"  Percentage: {token['dev_bought_percentage']}%")
                 print(f"  Curve Percentage: {token['dev_bought_curve_percentage']}%")
