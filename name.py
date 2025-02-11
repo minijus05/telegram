@@ -129,7 +129,8 @@ class TokenMonitor:
                                 address,
                                 scanner_data['soul'],
                                 scanner_data['syrax'],
-                                scanner_data['proficy']
+                                scanner_data['proficy'],
+                                is_new_token=True
                             )
                             print(f"[SUCCESS] Saved NEW token data: {address}")
                             
@@ -155,7 +156,8 @@ class TokenMonitor:
                                 address,
                                 scanner_data['soul'],
                                 scanner_data['syrax'],
-                                scanner_data['proficy']
+                                scanner_data['proficy'],
+                                is_new_token=False
                             )
                             print(f"[SUCCESS] Updated existing token data: {address}")
                             
@@ -364,6 +366,7 @@ class TokenMonitor:
         except Exception as e:
             logger.error(f"[2025-01-31 13:14:41] Error extracting token address: {e}")
             return []
+        
     def clean_line(self, text: str) -> str:
         """
         Išvalo tekstą nuo nereikalingų simbolių, bet palieka svarbius emoji
@@ -1205,6 +1208,7 @@ class DatabaseManager:
     def __init__(self, db_path='token_monitor.db'):
         self.db_path = db_path
         self._ensure_connection()
+        
 
     def _ensure_connection(self):
         self.conn = sqlite3.connect(self.db_path)
@@ -1242,8 +1246,150 @@ class DatabaseManager:
 
     def save_token_data(self, address: str, soul_data: Dict, syrax_data: Dict, proficy_data: Dict, is_new_token: bool):
         try:
+            
+            
             current_mc = soul_data.get('market_cap', 0) if soul_data else 0
             
+            # LOGGER 2: Patikriname ar token'as jau egzistuoja
+            self.cursor.execute("SELECT address FROM tokens WHERE address = ?", (address,))
+            exists = self.cursor.fetchone() is not None
+            
+            
+            # Pradedame transaction
+            self.cursor.execute('BEGIN TRANSACTION')
+            
+            # LOGGER 3: Įterpiame naują token'ą jei reikia
+            if is_new_token:
+                try:
+                    
+                    self.cursor.execute('''
+                        INSERT INTO tokens (address, first_seen, last_updated, is_gem, total_scans)
+                        VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, FALSE, 1)
+                    ''', (address,))
+                    
+                    
+                    # Soul Scanner duomenų įrašymas
+                    if soul_data:
+                        
+                        self.cursor.execute('''
+                            INSERT INTO soul_scanner_data (
+                                token_address, scan_time,
+                                name, symbol, market_cap, ath_market_cap,
+                                liquidity_usd, liquidity_sol, mint_status, freeze_status,
+                                lp_status, dex_status_paid, dex_status_ads, total_scans,
+                                social_link_x, social_link_tg, social_link_web
+                            ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            address,
+                            soul_data.get('name'),
+                            soul_data.get('symbol'),
+                            soul_data.get('market_cap'),
+                            soul_data.get('ath_market_cap'),
+                            soul_data.get('liquidity', {}).get('usd'),
+                            soul_data.get('liquidity', {}).get('sol'),
+                            soul_data.get('mint_status'),
+                            soul_data.get('freeze_status'),
+                            soul_data.get('lp_status'),
+                            soul_data.get('dex_status', {}).get('paid'),
+                            soul_data.get('dex_status', {}).get('ads'),
+                            soul_data.get('total_scans'),
+                            soul_data.get('social_links', {}).get('X'),
+                            soul_data.get('social_links', {}).get('TG'),
+                            soul_data.get('social_links', {}).get('WEB')
+                        ))
+                        
+                    
+                    # Syrax Scanner duomenų įrašymas
+                    if syrax_data:
+                        
+                        #for key, value in syrax_data.items():
+                            #print(f"- {key}: {value}")
+
+                        try:
+                            print(f"[DEBUG] Attempting to insert Syrax Scanner data for {address}")
+                            self.cursor.execute('''
+                                INSERT INTO syrax_scanner_data (
+                                    token_address, scan_time,
+                                    dev_bought_tokens, dev_bought_sol, dev_bought_percentage,
+                                    dev_bought_curve_percentage, dev_created_tokens,
+                                    same_name_count, same_website_count, same_telegram_count,
+                                    same_twitter_count, bundle_count, bundle_supply_percentage,
+                                    bundle_curve_percentage, bundle_sol, notable_bundle_count,
+                                    notable_bundle_supply_percentage, notable_bundle_curve_percentage,
+                                    notable_bundle_sol, sniper_activity_tokens,
+                                    sniper_activity_percentage, sniper_activity_sol,
+                                    created_time, traders_count, traders_last_swap,
+                                    holders_total, holders_top10_percentage,
+                                    holders_top25_percentage, holders_top50_percentage,
+                                    dev_holds, dev_sold_times, dev_sold_sol,
+                                    dev_sold_percentage
+                                ) VALUES (
+                                    ?, CURRENT_TIMESTAMP,
+                                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                                )
+                            ''', (
+                                address,
+                                syrax_data.get('dev_bought', {}).get('tokens'),  # Pataisyta struktūra
+                                syrax_data.get('dev_bought', {}).get('sol'),
+                                syrax_data.get('dev_bought', {}).get('percentage'),
+                                syrax_data.get('dev_bought', {}).get('curve_percentage'),
+                                syrax_data.get('dev_created_tokens'),
+                                syrax_data.get('same_name_count'),
+                                syrax_data.get('same_website_count'),
+                                syrax_data.get('same_telegram_count'),
+                                syrax_data.get('same_twitter_count'),
+                                syrax_data.get('bundle', {}).get('count'),  # Pataisyta struktūra
+                                syrax_data.get('bundle', {}).get('supply_percentage'),
+                                syrax_data.get('bundle', {}).get('curve_percentage'),
+                                syrax_data.get('bundle', {}).get('sol'),
+                                syrax_data.get('notable_bundle', {}).get('count'),  # Pataisyta struktūra
+                                syrax_data.get('notable_bundle', {}).get('supply_percentage'),
+                                syrax_data.get('notable_bundle', {}).get('curve_percentage'),
+                                syrax_data.get('notable_bundle', {}).get('sol'),
+                                syrax_data.get('sniper_activity', {}).get('tokens', 0),  # Pataisyta struktūra
+                                syrax_data.get('sniper_activity', {}).get('percentage'),
+                                syrax_data.get('sniper_activity', {}).get('sol'),
+                                syrax_data.get('created_time'),
+                                syrax_data.get('traders', {}).get('count'),  # Pataisyta struktūra
+                                syrax_data.get('traders', {}).get('last_swap'),
+                                syrax_data.get('holders', {}).get('total'),  # Pataisyta struktūra
+                                syrax_data.get('holders', {}).get('top10_percentage'),
+                                syrax_data.get('holders', {}).get('top25_percentage'),
+                                syrax_data.get('holders', {}).get('top50_percentage'),
+                                syrax_data.get('dev_holds'),  # Tiesiogiai iš dev_holds
+                                syrax_data.get('dev_sold', {}).get('times'),  # Iš dev_sold nested objekto
+                                syrax_data.get('dev_sold', {}).get('sol'),  # Iš dev_sold nested objekto
+                                syrax_data.get('dev_sold', {}).get('percentage')
+                            ))
+                            
+                        except Exception as e:
+                           
+                            raise
+                    
+                    # Proficy Price duomenų įrašymas
+                    if proficy_data:
+                        
+                        self.cursor.execute('''
+                            INSERT INTO proficy_price_data (
+                                token_address, scan_time,
+                                price_change_5m, volume_5m, bs_ratio_5m,
+                                price_change_1h, volume_1h, bs_ratio_1h
+                            ) VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            address,
+                            proficy_data.get('5m', {}).get('price_change'),
+                            proficy_data.get('5m', {}).get('volume'),
+                            proficy_data.get('5m', {}).get('bs_ratio'),
+                            proficy_data.get('1h', {}).get('price_change'),
+                            proficy_data.get('1h', {}).get('volume'),
+                            proficy_data.get('1h', {}).get('bs_ratio')
+                        ))
+                        
+                except Exception as e:
+                    
+                    raise
+
             if not is_new_token:  # Kai tai UPDATE
                 initial_mc, multiplier = self.calculate_multiplier(address, current_mc)
                 
@@ -1257,7 +1403,7 @@ class DatabaseManager:
                     print(f"{'='*50}\n")
                     
                     # Jei pasiekė GEM_MULTIPLIER
-                    if multiplier >= float(config.GEM_MULTIPLIER.rstrip('x')):
+                    if multiplier >= float(Config.GEM_MULTIPLIER.rstrip('x')):
                         # Pažymime kaip GEM
                         self.cursor.execute('''
                             UPDATE tokens 
@@ -1284,7 +1430,6 @@ class DatabaseManager:
                         ''', (address,))
                         initial_syrax_data = dict(self.cursor.fetchone())
 
-                        # Prie esamo kodo pridėti:
                         self.cursor.execute('''
                             SELECT * FROM proficy_price_data 
                             WHERE token_address = ? 
@@ -1294,6 +1439,7 @@ class DatabaseManager:
                         initial_proficy_data = dict(self.cursor.fetchone())
                         
                         # Įrašome į gem_tokens ML analizei
+                        # gem_tokens INSERT užklausą pakeisti į:
                         self.cursor.execute('''
                             INSERT OR IGNORE INTO gem_tokens (
                                 token_address,
@@ -1324,81 +1470,112 @@ class DatabaseManager:
                                 initial_price_change_1h, initial_volume_1h, initial_bs_ratio_1h,
                                 
                                 -- ML rezultatai
-                                similarity_score, confidence_level, recommendation, avg_z_score, is_passed
-                            ) VALUES (
-                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                                ?, ?, ?, ?, ?, 100, 100, 'CONFIRMED GEM', 0, TRUE
-                            )
+                                similarity_score, confidence_level, recommendation
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 100, 100, 'CONFIRMED GEM')
                         ''', (
                             address,
                             # Soul Scanner duomenys
                             initial_soul_data.get('name'),
                             initial_soul_data.get('symbol'),
-                            initial_soul_data.get('market_cap'),
-                            initial_soul_data.get('ath_market_cap'),
-                            initial_soul_data.get('liquidity_usd'),
-                            initial_soul_data.get('liquidity_sol'),
-                            initial_soul_data.get('mint_status'),
-                            initial_soul_data.get('freeze_status'),
-                            initial_soul_data.get('lp_status'),
-                            initial_soul_data.get('dex_status_paid'),
-                            initial_soul_data.get('dex_status_ads'),
-                            initial_soul_data.get('total_scans'),
-                            initial_soul_data.get('social_links', {}).get('X'),
-                            initial_soul_data.get('social_links', {}).get('TG'),
-                            initial_soul_data.get('social_links', {}).get('WEB'),
+                            initial_soul_data.get('market_cap', 0),
+                            initial_soul_data.get('ath_market_cap', 0),
+                            initial_soul_data.get('liquidity_usd', 0),
+                            initial_soul_data.get('liquidity_sol', 0),
+                            initial_soul_data.get('mint_status', 0),
+                            initial_soul_data.get('freeze_status', 0),
+                            initial_soul_data.get('lp_status', 0),
+                            initial_soul_data.get('dex_status_paid', 0),
+                            initial_soul_data.get('dex_status_ads', 0),
+                            initial_soul_data.get('total_scans', 0),
+                            initial_soul_data.get('social_link_x', ''),
+                            initial_soul_data.get('social_link_tg', ''),
+                            initial_soul_data.get('social_link_web', ''),
                             
                             # Syrax Scanner duomenys
-                            initial_syrax_data.get('dev_bought_tokens'),
-                            initial_syrax_data.get('dev_bought_sol'),
-                            initial_syrax_data.get('dev_bought_percentage'),
-                            initial_syrax_data.get('dev_bought_curve_percentage'),
-                            initial_syrax_data.get('dev_created_tokens'),
-                            initial_syrax_data.get('same_name_count'),
-                            initial_syrax_data.get('same_website_count'),
-                            initial_syrax_data.get('same_telegram_count'),
-                            initial_syrax_data.get('same_twitter_count'),
-                            initial_syrax_data.get('bundle_count'),
-                            initial_syrax_data.get('bundle_supply_percentage'),
-                            initial_syrax_data.get('bundle_curve_percentage'),
-                            initial_syrax_data.get('bundle_sol'),
-                            initial_syrax_data.get('notable_bundle_count'),
-                            initial_syrax_data.get('notable_bundle_supply_percentage'),
-                            initial_syrax_data.get('notable_bundle_curve_percentage'),
-                            initial_syrax_data.get('notable_bundle_sol'),
-                            initial_syrax_data.get('sniper_activity_tokens'),
-                            initial_syrax_data.get('sniper_activity_percentage'),
-                            initial_syrax_data.get('sniper_activity_sol'),
-                            initial_syrax_data.get('created_time'),
-                            initial_syrax_data.get('traders_count'),
-                            initial_syrax_data.get('traders_last_swap'),
-                            initial_syrax_data.get('holders_total'),
-                            initial_syrax_data.get('holders_top10_percentage'),
-                            initial_syrax_data.get('holders_top25_percentage'),
-                            initial_syrax_data.get('holders_top50_percentage'),
-                            initial_syrax_data.get('dev_holds'),
-                            initial_syrax_data.get('dev_sold_times'),
-                            initial_syrax_data.get('dev_sold_sol'),
-                            initial_syrax_data.get('dev_sold_percentage'),
+                            initial_syrax_data.get('dev_bought_tokens', 0),
+                            initial_syrax_data.get('dev_bought_sol', 0),
+                            initial_syrax_data.get('dev_bought_percentage', 0),
+                            initial_syrax_data.get('dev_bought_curve_percentage', 0),
+                            initial_syrax_data.get('dev_created_tokens', 0),
+                            initial_syrax_data.get('same_name_count', 0),
+                            initial_syrax_data.get('same_website_count', 0),
+                            initial_syrax_data.get('same_telegram_count', 0),
+                            initial_syrax_data.get('same_twitter_count', 0),
+                            initial_syrax_data.get('bundle_count', 0),
+                            initial_syrax_data.get('bundle_supply_percentage', 0),
+                            initial_syrax_data.get('bundle_curve_percentage', 0),
+                            initial_syrax_data.get('bundle_sol', 0),
+                            initial_syrax_data.get('notable_bundle_count', 0),
+                            initial_syrax_data.get('notable_bundle_supply_percentage', 0),
+                            initial_syrax_data.get('notable_bundle_curve_percentage', 0),
+                            initial_syrax_data.get('notable_bundle_sol', 0),
+                            initial_syrax_data.get('sniper_activity', {}).get('tokens', 0),
+                            initial_syrax_data.get('sniper_activity_percentage', 0),
+                            initial_syrax_data.get('sniper_activity_sol', 0),
+                            initial_syrax_data.get('created_time', ''),
+                            initial_syrax_data.get('traders_count', 0),
+                            initial_syrax_data.get('traders_last_swap', ''),
+                            initial_syrax_data.get('holders_total', 0),
+                            initial_syrax_data.get('holders_top10_percentage', 0),
+                            initial_syrax_data.get('holders_top25_percentage', 0),
+                            initial_syrax_data.get('holders_top50_percentage', 0),
+                            initial_syrax_data.get('dev_holds', 0),
+                            initial_syrax_data.get('dev_sold_times', 0),
+                            initial_syrax_data.get('dev_sold_sol', 0),
+                            initial_syrax_data.get('dev_sold_percentage', 0),
                             
                             # Proficy duomenys
-                            initial_proficy_data.get('5m', {}).get('price_change'),
-                            initial_proficy_data.get('5m', {}).get('volume'),
-                            initial_proficy_data.get('5m', {}).get('bs_ratio'),
-                            initial_proficy_data.get('1h', {}).get('price_change'),
-                            initial_proficy_data.get('1h', {}).get('volume'),
-                            initial_proficy_data.get('1h', {}).get('bs_ratio')
+                            initial_proficy_data.get('price_change_5m', 0),
+                            initial_proficy_data.get('volume_5m', 0),
+                            initial_proficy_data.get('bs_ratio_5m', 0),
+                            initial_proficy_data.get('price_change_1h', 0),
+                            initial_proficy_data.get('volume_1h', 0),
+                            initial_proficy_data.get('bs_ratio_1h', 0)
                         ))
 
-            self.conn.commit()
-            return True
+            # LOGGER 7: Įsitikiname, kad viskas išsaugota
+            
+            try:
+                self.conn.commit()
+                print(f"[DEBUG] All changes committed successfully")
+                
+                # LOGGER 8: Galutinis patikrinimas
+                self.cursor.execute("SELECT * FROM tokens WHERE address = ?", (address,))
+                final_check = self.cursor.fetchone()
+                print(f"[DEBUG] Final check - token in database: {bool(final_check)}")
+                
+                if final_check:
+                    print(f"[DEBUG] Token status - is_gem: {final_check['is_gem']}, total_scans: {final_check['total_scans']}")
+                
+                # Patikriname ar įrašyti scanner'ių duomenys
+                self.cursor.execute("SELECT COUNT(*) FROM soul_scanner_data WHERE token_address = ?", (address,))
+                soul_count = self.cursor.fetchone()[0]
+                self.cursor.execute("SELECT COUNT(*) FROM syrax_scanner_data WHERE token_address = ?", (address,))
+                syrax_count = self.cursor.fetchone()[0]
+                self.cursor.execute("SELECT COUNT(*) FROM proficy_price_data WHERE token_address = ?", (address,))
+                proficy_count = self.cursor.fetchone()[0]
+                
+                print(f"[DEBUG] Scanner data records:")
+                print(f"- Soul Scanner records: {soul_count}")
+                print(f"- Syrax Scanner records: {syrax_count}")
+                print(f"- Proficy Price records: {proficy_count}")
+                
+                return True
+
+            except Exception as e:
+                
+                self.conn.rollback()
+                raise
 
         except Exception as e:
             logger.error(f"Error saving token data: {e}")
+            print(f"[ERROR] Global error in save_token_data: {str(e)}")
+            print(f"[ERROR] Error type: {type(e).__name__}")
             self.conn.rollback()
             return False
-
+    
     def load_gem_tokens(self) -> List[Dict]:
         """Užkrauna visus GEM token'us su jų pradiniais duomenimis ML analizei"""
         try:
