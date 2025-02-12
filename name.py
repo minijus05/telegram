@@ -45,7 +45,7 @@ class Config:
     MIN_GEMS_FOR_ANALYSIS = 10  # Minimalus GEM skaičius prieš pradedant analizę
 
     # GEM settings
-    GEM_MULTIPLIER = "10x"
+    GEM_MULTIPLIER = "2x"
     MIN_GEM_SCORE = 10
 
     # Žinutes siuntimas
@@ -333,35 +333,50 @@ class TokenMonitor:
 
     async def format_analysis_message(self, analysis_result: Dict, scanner_data: Dict) -> str:
         """Formatuoja analizės rezultatų žinutę"""
-        utc_time, local_time = self.get_current_time()
+        utc_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
         
         soul_data = scanner_data['soul']
         syrax_data = scanner_data['syrax']
         proficy_data = scanner_data['proficy']
 
-        # Paimame token_address arba address, arba contract_address - kas yra
         token_address = (
             soul_data.get('token_address') or 
             soul_data.get('address') or 
             soul_data.get('contract_address')
         )
 
-        return f"""
-    🔍 *Token Analysis Results*
-    ⏰ UTC: {utc_time}
-    🌍 Local (UTC+2): {local_time}
+        # Pradžios tekstas
+        message = f"""Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {utc_time}
+    Current User's Login: minijus05
 
-    *Token Address:*
+    --- PARAMETER RANGES CHECK ---"""
+
+        # Parameter ranges check dalis
+        for param, details in analysis_result['primary_check']['details'].items():
+            status = "✅" if details['in_range'] else "❌"
+            message += f"""
+
+    {status} {param}:
+        Current Value: {details['value']:.2f}
+        Valid Range: {details['interval']['min']:.2f} - {details['interval']['max']:.2f}
+        Z-Score: {details['z_score']:.2f}"""
+
+        # Analysis Results dalis
+        message += f"""
+
+    --- ANALYSIS RESULTS ---
+    GEM Potential Score: {analysis_result['similarity_score']:.1f}%
+    Confidence Level: {analysis_result['confidence_level']:.1f}%
+    Recommendation: {analysis_result['recommendation']}
+
+    🔍 Token Analysis Results
+    ⏰ UTC: {utc_time}
+
+    Token Address:
     `{token_address}`
     [View on GMGN](https://gmgn.ai/sol/token/{soul_data['contract_address']})
 
-    *Analysis Results:*
-    • Similarity Score: `{analysis_result['similarity_score']:.2f}%`
-    • Confidence Level: `{analysis_result['confidence_level']:.2f}%`
-    • Average Z-Score: `{analysis_result['avg_z_score']:.2f}`
-    • Recommendation: `{analysis_result['recommendation']}`
-
-    *Primary Parameters:*
+    Primary Parameters:
     • Dev Created Tokens:
       - Value: `{syrax_data['dev_created_tokens']}`
       - Z-Score: `{analysis_result['primary_check']['details']['dev_created_tokens']['z_score']:.4f}`
@@ -388,27 +403,10 @@ class TokenMonitor:
       - Liquidity USD: `${soul_data['liquidity']['usd']:,.2f}`
       - Volume (1h): `${proficy_data['1h']['volume']:,.2f}`
       - Price Change (1h): `{proficy_data['1h']['price_change']}`%
-      
 
-    TokenAnalysis """
+    TokenAnalysis"""
 
-    async def send_analysis_alert(self, analysis_result: Dict, scanner_data: Dict):
-        """Siunčia analizės rezultatų žinutę į Telegram"""
-        if not self.should_send_alert(
-            analysis_result['similarity_score'], 
-            analysis_result['confidence_level']
-        ):
-            return
-        
-        message = await self.format_analysis_message(analysis_result, scanner_data)
-        
-        await self.telegram.send_message(
-            Config.TELEGRAM_GEM_CHAT,
-            message,
-            parse_mode='Markdown',
-            link_preview=False
-        )
-        logger.info(f"Sent analysis alert with {analysis_result['similarity_score']}% similarity")
+        return message
 
     
     def _extract_token_addresses(self, message: str) -> List[str]:
@@ -1984,7 +1982,7 @@ class DatabaseManager:
                     
                     already_gem = self.cursor.fetchone() is not None
                     
-                    if not already_gem:  # Įrašome į gem_tokens TIK jei dar nėra
+                    if not already_gem and multiplier >= float(Config.GEM_MULTIPLIER.replace('x', '')):  # Įrašome į gem_tokens TIK jei dar nėra IR multiplier >= 10
                         print(f"🌟 Token {address} has reached {multiplier:.2f}x and is now marked as GEM!")
                         
                         # TIK ČIA atnaujiname is_gem statusą, kai token'as tikrai tapo GEM
