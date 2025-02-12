@@ -8,7 +8,7 @@ from sklearn.ensemble import IsolationForest
 from typing import Dict, List
 from telethon import TelegramClient, events
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import sqlite3
 import time
 from telethon.sessions.sqlite import SQLiteSession
@@ -30,8 +30,8 @@ class Config:
     TELEGRAM_API_ID = '25425140'
     TELEGRAM_API_HASH = 'bd0054bc5393af360bc3930a27403c33'
     TELEGRAM_SOURCE_CHATS = ['@solearlytrending', '@botubotass']
-    TELEGRAM_DEST_CHAT = '@smartas1'
-    TELEGRAM_GEM_CHAT = '@smartas1'
+    
+    TELEGRAM_GEM_CHAT = '@testasmano'
     
     # Scanner settings
     SCANNER_GROUP = '@skaneriss'
@@ -39,11 +39,13 @@ class Config:
     SYRAX_SCANNER_BOT = 7488438206
     PROFICY_PRICE_BOT = 5457577145
 
+    USER_LOGIN = 'minijus05'
+
     # ML settings
-    MIN_GEMS_FOR_ANALYSIS = 1  # Minimalus GEM skaičius prieš pradedant analizę
+    MIN_GEMS_FOR_ANALYSIS = 10  # Minimalus GEM skaičius prieš pradedant analizę
 
     # GEM settings
-    GEM_MULTIPLIER = "1x"
+    GEM_MULTIPLIER = "10x"
     MIN_GEM_SCORE = 10
 
     # Žinutes siuntimas
@@ -230,44 +232,52 @@ class TokenMonitor:
             print(f"Collected GEMs: {analysis_result.get('collected_gems', 0)}")
             
         elif analysis_result['status'] == 'success':
-            soul_data = scanner_data['soul']
-            print(f"\nAnalyzing Token: {soul_data['name']} (${soul_data['symbol']})")
-            print(f"Contract: {soul_data['address']}")
+            soul_data = scanner_data.get('soul', {})
+            print(f"\nAnalyzing Token: {soul_data.get('name', 'Unknown')} (${soul_data.get('symbol', 'Unknown')})")
             
             print("\n--- PRIMARY PARAMETERS CHECK ---")
-            syrax_data = scanner_data['syrax']
+            syrax_data = scanner_data.get('syrax', {})
             
             # Syrax Scanner Parametrai
             print("\nSyrax Scanner Parameters:")
-            print(f"Dev Created Tokens: {syrax_data['dev_created_tokens']}")
+            print(f"Dev Created Tokens: {syrax_data.get('dev_created_tokens', 0)}")
             print(f"Similar Tokens:")
-            print(f"- Same Name: {syrax_data['same_name_count']}")
-            print(f"- Same Website: {syrax_data['same_website_count']}")
-            print(f"- Same Telegram: {syrax_data['same_telegram_count']}")
-            print(f"- Same Twitter: {syrax_data['same_twitter_count']}")
+            print(f"- Same Name: {syrax_data.get('same_name_count', 0)}")
+            print(f"- Same Website: {syrax_data.get('same_website_count', 0)}")
+            print(f"- Same Telegram: {syrax_data.get('same_telegram_count', 0)}")
+            print(f"- Same Twitter: {syrax_data.get('same_twitter_count', 0)}")
             print(f"Dev Activity:")
-            print(f"- Bought %: {syrax_data['dev_bought_percentage']}")
-            print(f"- Bought Curve %: {syrax_data['dev_bought_curve_percentage']}")
-            print(f"- Sold %: {syrax_data['dev_sold_percentage']}")
+
+            # Dev bought info - nested structure
+            dev_bought = syrax_data.get('dev_bought', {})
+            print(f"- Bought %: {dev_bought.get('percentage', 0)}")
+            print(f"- Bought Curve %: {dev_bought.get('curve_percentage', 0)}")
+
+            # Dev sold info - nested structure
+            dev_sold = syrax_data.get('dev_sold', {})
+            print(f"- Sold %: {dev_sold.get('percentage', 0)}")
+
+            # Holders info - nested structure
+            holders = syrax_data.get('holders', {})
             print(f"Holders Distribution:")
-            print(f"- Total Holders: {syrax_data['holders_total']}")
-            print(f"- Top 10% Hold: {syrax_data['holders_top10_percentage']}%")
-            print(f"- Top 25% Hold: {syrax_data['holders_top25_percentage']}%")
-            print(f"- Top 50% Hold: {syrax_data['holders_top50_percentage']}%")
+            print(f"- Total Holders: {holders.get('total', 0)}")
+            print(f"- Top 10% Hold: {holders.get('top10_percentage', 0)}%")
+            print(f"- Top 25% Hold: {holders.get('top25_percentage', 0)}%")
+            print(f"- Top 50% Hold: {holders.get('top50_percentage', 0)}%")
 
             # Soul Scanner Parametrai
             print("\nSoul Scanner Parameters:")
-            print(f"Market Cap: ${soul_data['market_cap']:,.2f}")
-            print(f"Liquidity USD: ${soul_data['liquidity_usd']:,.2f}")
+            print(f"Market Cap: ${soul_data.get('market_cap', 0):,.2f}")
+            print(f"Liquidity USD: ${soul_data.get('liquidity_usd', 0):,.2f}")
 
-            # Proficy Parametrai
-            proficy_data = scanner_data['proficy']
+            # Proficy Parametrai - nested structure
+            proficy_data = scanner_data.get('proficy', {})
+            hour_data = proficy_data.get('1h', {})
             print("\nProficy Parameters:")
-            print(f"1h Volume: ${proficy_data['volume_1h']:,.2f}")
-            print(f"1h Price Change: {proficy_data['price_change_1h']}%")
-            print(f"1h B/S Ratio: {proficy_data['bs_ratio_1h']}")
+            print(f"1h Volume: ${hour_data.get('volume', 0):,.2f}")
+            print(f"1h Price Change: {hour_data.get('price_change', 0)}%")
+            print(f"1h B/S Ratio: {hour_data.get('bs_ratio', '1/1')}")
             
-            # Parametrų intervalų patikrinimas
             print("\n--- PARAMETER RANGES CHECK ---")
             for param, details in analysis_result['primary_check']['details'].items():
                 status = "✅" if details['in_range'] else "❌"
@@ -329,14 +339,21 @@ class TokenMonitor:
         syrax_data = scanner_data['syrax']
         proficy_data = scanner_data['proficy']
 
+        # Paimame token_address arba address, arba contract_address - kas yra
+        token_address = (
+            soul_data.get('token_address') or 
+            soul_data.get('address') or 
+            soul_data.get('contract_address')
+        )
+
         return f"""
     🔍 *Token Analysis Results*
     ⏰ UTC: {utc_time}
     🌍 Local (UTC+2): {local_time}
 
     *Token Address:*
-    `{soul_data['address']}`
-    • [View on GMGN](https://gmgn.ai/sol/token/{soul_data['address']})
+    `{token_address}`
+    [View on GMGN](https://gmgn.ai/sol/token/{soul_data['contract_address']})
 
     *Analysis Results:*
     • Similarity Score: `{analysis_result['similarity_score']:.2f}%`
@@ -371,9 +388,9 @@ class TokenMonitor:
       - Liquidity USD: `${soul_data['liquidity']['usd']:,.2f}`
       - Volume (1h): `${proficy_data['1h']['volume']:,.2f}`
       - Price Change (1h): `{proficy_data['1h']['price_change']}`%
-      - B/S Ratio (1h): `{float(proficy_data['1h']['bs_ratio']):.4f}`
+      
 
-    #TokenAnalysis #Solana"""
+    TokenAnalysis """
 
     async def send_analysis_alert(self, analysis_result: Dict, scanner_data: Dict):
         """Siunčia analizės rezultatų žinutę į Telegram"""
@@ -389,7 +406,7 @@ class TokenMonitor:
             Config.TELEGRAM_GEM_CHAT,
             message,
             parse_mode='Markdown',
-            disable_web_page_preview=False
+            link_preview=False
         )
         logger.info(f"Sent analysis alert with {analysis_result['similarity_score']}% similarity")
 
@@ -1135,6 +1152,15 @@ class MLGEMAnalyzer:
             print(f"Error training model: {str(e)}")
             return False
 
+    def _safe_float(self, value):
+        """Saugiai konvertuoja reikšmę į float"""
+        if value is None or value == 'N/A' or value == '':
+            return 0.0
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return 0.0
+
     def _prepare_training_data(self):
         """Paruošia duomenis ML modelio apmokymui"""
         print("\n=== Preparing Training Data ===")
@@ -1144,20 +1170,20 @@ class MLGEMAnalyzer:
                 features = []
                 # Soul features
                 for feature in self.features['soul']:
-                    value = float(token.get(feature, 0))
+                    value = self._safe_float(token.get(feature))
                     features.append(value)
-                
+
                 # Syrax features    
                 for feature in self.features['syrax']:
-                    value = float(token.get(feature, 0))
+                    value = self._safe_float(token.get(feature))
                     features.append(value)
-                
+
                 # Proficy features    
                 for feature in self.features['proficy']:
                     if 'bs_ratio' in feature:
-                        value = self._parse_bs_ratio(token.get(feature))
+                        value = self._parse_bs_ratio(token.get(feature, '1/1'))
                     else:
-                        value = float(token.get(feature, 0))
+                        value = self._safe_float(token.get(feature))
                     features.append(value)
                 
                 data.append(features)
@@ -1182,12 +1208,20 @@ class MLGEMAnalyzer:
         print(f"Available GEM tokens for analysis: {len(self.gem_tokens)}")
         
         try:
-            # Pirma patikriname ar tai score užklausa
-            if 'score' in token_data:
+            # Pirma patikriname ar turime pakankamai GEM duomenų ir ar modelis apmokytas
+            if len(self.gem_tokens) < Config.MIN_GEMS_FOR_ANALYSIS:
                 return {
-                    'status': 'success',
-                    'stage': 'score',
-                    'score': float(token_data.get('score', 0))
+                    'status': 'pending',
+                    'message': f'Reikia daugiau GEM duomenų (min: {Config.MIN_GEMS_FOR_ANALYSIS}, current: {len(self.gem_tokens)})',
+                    'collected_gems': len(self.gem_tokens)
+                }
+
+            # SVARBU: Apmokome modelį prieš analizę
+            if not self._train_main_model():
+                return {
+                    'status': 'failed',
+                    'stage': 'training',
+                    'message': 'Failed to train ML model'
                 }
 
             # Gauname adresą iš soul sekcijos
@@ -1218,7 +1252,6 @@ class MLGEMAnalyzer:
                     'message': f'Reikia daugiau GEM duomenų (min: {Config.MIN_GEMS_FOR_ANALYSIS}, current: {len(self.gem_tokens)})',
                     'collected_gems': len(self.gem_tokens)
                 }
-
             # Gauname visus token duomenis iš DB
             self.db.cursor.execute('''
                 SELECT 
@@ -1288,8 +1321,6 @@ class MLGEMAnalyzer:
                 LIMIT 1
             ''', (address,))
 
-            # Tęsti su likusiu kodu...
-            
             row = self.db.cursor.fetchone()
             if not row:
                 print(f"Error: No data found for token {address}")
@@ -1306,141 +1337,169 @@ class MLGEMAnalyzer:
             print("\nToken Data from Database:")
             print(json.dumps(db_data, indent=2))
 
-            # Suformuojame primary check duomenis
-            primary_data = {
-                'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
-                'same_name_count': float(db_data.get('same_name_count', 0)),
-                'same_website_count': float(db_data.get('same_website_count', 0)),
-                'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
-                'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
-                'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
-                'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
-                'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0)),
-                'holders_total': float(db_data.get('holders_total', 0)),
-                'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
-                'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
-                'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
-                'market_cap': float(db_data.get('market_cap', 0)),
-                'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
-                'volume_1h': float(db_data.get('volume_1h', 0)),
-                'price_change_1h': float(db_data.get('price_change_1h', 0)),
-                'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
-            }
-
-            # Pirminė parametrų patikra
-            primary_check = self.interval_analyzer.check_primary_parameters(primary_data)
-            print("\nPrimary Check Results:")
-            for param, details in primary_check['details'].items():
-                print(f"{param}:")
-                print(f"  Value: {details['value']}")
-                print(f"  In Range: {details['in_range']}")
-                print(f"  Z-Score: {details['z_score']}")
-
-            if not primary_check['passed']:
-                return {
-                    'status': 'failed',
-                    'stage': 'primary',
-                    'score': 0,
-                    'details': primary_check['details'],
-                    'message': 'Token nepraėjo pirminės filtracijos'
+            try:
+                # Suformuojame primary check duomenis
+                primary_data = {
+                    'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
+                    'same_name_count': float(db_data.get('same_name_count', 0)),
+                    'same_website_count': float(db_data.get('same_website_count', 0)),
+                    'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
+                    'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
+                    'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
+                    'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
+                    'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0)),
+                    'holders_total': float(db_data.get('holders_total', 0)),
+                    'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
+                    'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
+                    'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
+                    'market_cap': float(db_data.get('market_cap', 0)),
+                    'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
+                    'volume_1h': float(db_data.get('volume_1h', 0)),
+                    'price_change_1h': float(db_data.get('price_change_1h', 0)),
+                    'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
                 }
 
-            # ML analizei ruošiame features pagal scannerius
-            features = []
-            feature_details = {}
-            
-            # Soul scanner features
-            soul_features = {
-                'market_cap': float(db_data.get('market_cap', 0)),
-                'ath_market_cap': float(db_data.get('ath_market_cap', 0)),
-                'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
-                'liquidity_sol': float(db_data.get('liquidity_sol', 0)),
-                'mint_status': float(db_data.get('mint_status', 0)),
-                'freeze_status': float(db_data.get('freeze_status', 0)),
-                'lp_status': float(db_data.get('lp_status', 0)),
-                'dex_status_paid': float(db_data.get('dex_status_paid', 0)),
-                'dex_status_ads': float(db_data.get('dex_status_ads', 0)),
-                'total_scans': float(db_data.get('total_scans', 0))
-            }
-            features.extend(soul_features.values())
-            feature_details['soul'] = soul_features
+                # Pirminė parametrų patikra
+                primary_check = self.interval_analyzer.check_primary_parameters(primary_data)
+                print("\nPrimary Check Results:")
+                for param, details in primary_check['details'].items():
+                    print(f"{param}:")
+                    print(f"  Value: {details['value']}")
+                    print(f"  In Range: {details['in_range']}")
+                    print(f"  Z-Score: {details['z_score']}")
 
-            # Syrax scanner features
-            syrax_features = {
-                'dev_bought_tokens': float(db_data.get('dev_bought_tokens', 0)),
-                'dev_bought_sol': float(db_data.get('dev_bought_sol', 0)),
-                'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
-                'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
-                'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
-                'same_name_count': float(db_data.get('same_name_count', 0)),
-                'same_website_count': float(db_data.get('same_website_count', 0)),
-                'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
-                'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
-                'bundle_count': float(db_data.get('bundle_count', 0)),
-                'bundle_supply_percentage': float(db_data.get('bundle_supply_percentage', 0)),
-                'bundle_curve_percentage': float(db_data.get('bundle_curve_percentage', 0)),
-                'bundle_sol': float(db_data.get('bundle_sol', 0)),
-                'notable_bundle_count': float(db_data.get('notable_bundle_count', 0)),
-                'notable_bundle_supply_percentage': float(db_data.get('notable_bundle_supply_percentage', 0)),
-                'notable_bundle_curve_percentage': float(db_data.get('notable_bundle_curve_percentage', 0)),
-                'notable_bundle_sol': float(db_data.get('notable_bundle_sol', 0)),
-                'sniper_activity_tokens': float(db_data.get('sniper_activity_tokens', 0)),
-                'sniper_activity_percentage': float(db_data.get('sniper_activity_percentage', 0)),
-                'sniper_activity_sol': float(db_data.get('sniper_activity_sol', 0)),
-                'holders_total': float(db_data.get('holders_total', 0)),
-                'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
-                'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
-                'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
-                'dev_holds': float(db_data.get('dev_holds', 0)),
-                'dev_sold_times': float(db_data.get('dev_sold_times', 0)),
-                'dev_sold_sol': float(db_data.get('dev_sold_sol', 0)),
-                'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0))
-            }
-            features.extend(syrax_features.values())
-            feature_details['syrax'] = syrax_features
+                if not primary_check['passed']:
+                    return {
+                        'status': 'failed',
+                        'stage': 'primary',
+                        'score': 0,
+                        'details': primary_check['details'],
+                        'message': 'Token nepraėjo pirminės filtracijos'
+                    }
 
-            # Proficy features
-            proficy_features = {
-                'price_change_5m': float(db_data.get('price_change_5m', 0)),
-                'volume_5m': float(db_data.get('volume_5m', 0)),
-                'bs_ratio_5m': self._parse_bs_ratio(db_data.get('bs_ratio_5m', '1/1')),
-                'price_change_1h': float(db_data.get('price_change_1h', 0)),
-                'volume_1h': float(db_data.get('volume_1h', 0)),
-                'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
-            }
-            features.extend(proficy_features.values())
-            feature_details['proficy'] = proficy_features
+                # ML analizei ruošiame features pagal scannerius
+                try:
+                    features = []
+                    feature_details = {}
+                    
+                    # Soul scanner features
+                    soul_features = {
+                        'market_cap': float(db_data.get('market_cap', 0)),
+                        'ath_market_cap': float(db_data.get('ath_market_cap', 0)),
+                        'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
+                        'liquidity_sol': float(db_data.get('liquidity_sol', 0)),
+                        'mint_status': float(db_data.get('mint_status', 0)),
+                        'freeze_status': float(db_data.get('freeze_status', 0)),
+                        'lp_status': float(db_data.get('lp_status', 0)),
+                        'dex_status_paid': float(db_data.get('dex_status_paid', 0)),
+                        'dex_status_ads': float(db_data.get('dex_status_ads', 0)),
+                        'total_scans': float(db_data.get('total_scans', 0))
+                    }
+                    features.extend(soul_features.values())
+                    feature_details['soul'] = soul_features
 
-            # Debug - ištraukti features
-            print("\nExtracted Features:")
-            for scanner, features_dict in feature_details.items():
-                print(f"\n{scanner.upper()} Features:")
-                for feature, value in features_dict.items():
-                    print(f"  {feature}: {value}")
+                    # Syrax scanner features
+                    syrax_features = {
+                        'dev_bought_tokens': float(db_data.get('dev_bought_tokens', 0)),
+                        'dev_bought_sol': float(db_data.get('dev_bought_sol', 0)),
+                        'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
+                        'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
+                        'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
+                        'same_name_count': float(db_data.get('same_name_count', 0)),
+                        'same_website_count': float(db_data.get('same_website_count', 0)),
+                        'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
+                        'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
+                        'bundle_count': float(db_data.get('bundle_count', 0)),
+                        'bundle_supply_percentage': float(db_data.get('bundle_supply_percentage', 0)),
+                        'bundle_curve_percentage': float(db_data.get('bundle_curve_percentage', 0)),
+                        'bundle_sol': float(db_data.get('bundle_sol', 0)),
+                        'notable_bundle_count': float(db_data.get('notable_bundle_count', 0)),
+                        'notable_bundle_supply_percentage': float(db_data.get('notable_bundle_supply_percentage', 0)),
+                        'notable_bundle_curve_percentage': float(db_data.get('notable_bundle_curve_percentage', 0)),
+                        'notable_bundle_sol': float(db_data.get('notable_bundle_sol', 0)),
+                        'sniper_activity_tokens': float(db_data.get('sniper_activity_tokens', 0)),
+                        'sniper_activity_percentage': float(db_data.get('sniper_activity_percentage', 0)),
+                        'sniper_activity_sol': float(db_data.get('sniper_activity_sol', 0)),
+                        'holders_total': float(db_data.get('holders_total', 0)),
+                        'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
+                        'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
+                        'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
+                        'dev_holds': float(db_data.get('dev_holds', 0)),
+                        'dev_sold_times': float(db_data.get('dev_sold_times', 0)),
+                        'dev_sold_sol': float(db_data.get('dev_sold_sol', 0)),
+                        'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0))
+                    }
+                    features.extend(syrax_features.values())
+                    feature_details['syrax'] = syrax_features
 
-            # ML analizė
-            X = np.array([features])
-            X_scaled = self.scaler.transform(X)
-            anomaly_score = self.isolation_forest.score_samples(X_scaled)[0]
-            similarity_score = (anomaly_score + 1) / 2 * 100
+                    # Proficy features
+                    proficy_features = {
+                        'price_change_5m': float(db_data.get('price_change_5m', 0)),
+                        'volume_5m': float(db_data.get('volume_5m', 0)),
+                        'bs_ratio_5m': self._parse_bs_ratio(db_data.get('bs_ratio_5m', '1/1')),
+                        'price_change_1h': float(db_data.get('price_change_1h', 0)),
+                        'volume_1h': float(db_data.get('volume_1h', 0)),
+                        'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
+                    }
+                    features.extend(proficy_features.values())
+                    feature_details['proficy'] = proficy_features
 
-            # Formuojame rezultatą
-            result = {
-                'status': 'success',
-                'stage': 'full',
-                'primary_check': primary_check,
-                'similarity_score': similarity_score,
-                'feature_analysis': feature_details,
-                'recommendation': self._generate_recommendation(similarity_score, primary_check['avg_z_score']),
-                'confidence_level': self._calculate_confidence(similarity_score, primary_check['avg_z_score'])
-            }
+                    # Debug - ištraukti features
+                    print("\nExtracted Features:")
+                    for scanner, features_dict in feature_details.items():
+                        print(f"\n{scanner.upper()} Features:")
+                        for feature, value in features_dict.items():
+                            print(f"  {feature}: {value}")
 
-            print("\nAnalysis Results:")
-            print(f"Similarity Score: {similarity_score:.2f}%")
-            print(f"Confidence Level: {result['confidence_level']:.2f}%")
-            print(f"Recommendation: {result['recommendation']}")
+                    # ML analizė
+                    try:
+                        X = np.array([features])
+                        X_scaled = self.scaler.transform(X)
+                        anomaly_score = self.isolation_forest.score_samples(X_scaled)[0]
+                        similarity_score = (anomaly_score + 1) / 2 * 100
 
-            return result
+                        # Formuojame rezultatą
+                        result = {
+                            'status': 'success',
+                            'stage': 'full',
+                            'primary_check': primary_check,
+                            'similarity_score': similarity_score,
+                            'avg_z_score': primary_check['avg_z_score'],
+                            'feature_analysis': feature_details,
+                            'recommendation': self._generate_recommendation(similarity_score, primary_check['avg_z_score']),
+                            'confidence_level': self._calculate_confidence(similarity_score, primary_check['avg_z_score'])
+                        }
+
+                        print("\nAnalysis Results:")
+                        print(f"Similarity Score: {similarity_score:.2f}%")
+                        print(f"Confidence Level: {result['confidence_level']:.2f}%")
+                        print(f"Recommendation: {result['recommendation']}")
+
+                        return result
+
+                    except Exception as e:
+                        print(f"Error during ML analysis: {str(e)}")
+                        return {
+                            'status': 'failed',
+                            'stage': 'ml_analysis',
+                            'message': str(e)
+                        }
+
+                except Exception as e:
+                    print(f"Error during feature extraction: {str(e)}")
+                    return {
+                        'status': 'failed',
+                        'stage': 'feature_extraction',
+                        'message': str(e)
+                    }
+
+            except Exception as e:
+                print(f"Error during primary check: {str(e)}")
+                return {
+                    'status': 'failed',
+                    'stage': 'primary_check',
+                    'message': str(e)
+                }
 
         except Exception as e:
             print(f"Error during token analysis: {str(e)}")
@@ -1449,6 +1508,15 @@ class MLGEMAnalyzer:
                 'stage': 'analysis',
                 'message': f'Analysis error: {str(e)}'
             }
+            
+        finally:
+            try:
+                print(f"\n=== Analysis Complete ===")
+                print(f"Timestamp (UTC): 2025-02-11 23:25:04")
+                print(f"User: minijus05")
+                print("="*50)
+            except Exception as e:
+                print(f"Error in cleanup: {str(e)}")
     
     def _parse_bs_ratio(self, ratio_str: str) -> float:
         """Konvertuoja B/S ratio string į float"""
