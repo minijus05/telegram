@@ -1006,48 +1006,85 @@ class MLIntervalAnalyzer:
     """ML klasė pirminių intervalų nustatymui"""
     def __init__(self):
         self.primary_features = [
-        # Syrax Scanner parametrai
-        'dev_created_tokens',
-        'same_name_count',
-        'same_website_count',
-        'same_telegram_count',
-        'same_twitter_count',
-        'dev_bought_percentage',
-        'dev_bought_curve_percentage',
-        'dev_sold_percentage',
-        'holders_total',
-        'holders_top10_percentage',
-        'holders_top25_percentage',
-        'holders_top50_percentage',
-        # Soul Scanner parametrai
-        'market_cap',
-        'liquidity_usd',
-        # Proficy parametrai
-        'volume_1h',
-        'price_change_1h',
-        'bs_ratio_1h',
-        # Nauji privalomi parametrai
-        'bundle_count',
-        'mint_status',
-        'freeze_status',
-        'lp_status',
-        'sniper_activity_tokens',
-        'total_scans',
-        'traders_count'
-    ]
+            # Syrax Scanner parametrai (syrax_scanner_data lentelė)
+            'dev_created_tokens',
+            'same_name_count',
+            'same_website_count',
+            'same_telegram_count',
+            'same_twitter_count',
+            'dev_bought_percentage',
+            'dev_bought_curve_percentage',
+            'dev_sold_percentage',
+            'holders_total',
+            'holders_top10_percentage',
+            'holders_top25_percentage',
+            'holders_top50_percentage',
+            
+            # Soul Scanner parametrai (soul_scanner_data lentelė)
+            'market_cap',
+            'liquidity_usd',
+            'mint_status',      # čia Boolean tipo
+            'freeze_status',    # čia Boolean tipo
+            'lp_status',       # čia Boolean tipo
+            'total_scans',
+            
+            # Proficy parametrai (proficy_price_data lentelė)
+            'volume_1h',
+            'price_change_1h',
+            'bs_ratio_1h',
+            
+            # Kiti parametrai iš syrax_scanner_data
+            'bundle_count',
+            'sniper_activity_tokens',
+            'traders_count'
+        ]
         self.scaler = MinMaxScaler()
         self.isolation_forest = IsolationForest(contamination=0.4, random_state=42)
         self.intervals = {feature: {'min': float('inf'), 'max': float('-inf')} for feature in self.primary_features}
 
-    def _parse_ratio_value(self, ratio_str: str) -> float:
-        """Konvertuoja bs_ratio string į float reikšmę
+        # IQR daugikliai skirtingiems parametrams
+        self.IQR_MULTIPLIERS = {
+            'price_change_1h': 1.5,      # Mažesnis daugiklis kainų pokyčiams
+            'market_cap': 1.5,           # Vidutinis daugiklis market cap
+            'volume_1h': 1.5,            # Vidutinis daugiklis volume
+            'holders_total': 1.5,        # Vidutinis daugiklis holders
+            'total_scans': 1.5,          # Vidutinis daugiklis skanavimams
+            'traders_count': 1.5,        # Vidutinis daugiklis traders
+            'bs_ratio_1h': 1.5,          # Mažesnis daugiklis buy/sell ratio
+            'liquidity_usd': 1.5,        # Vidutinis daugiklis likvidumui
+            'default': 1.5               # Visiems kitiems
+        }
+
+        # Absoliučios ribos parametrams
+        self.ABSOLUTE_LIMITS = {
+            'price_change_1h': (-100, 1000),      # nuo -100% iki 1000%
+            'market_cap': (100, 1000000),      # nuo 100$ iki 1B$
+            'volume_1h': (10, 10000000),          # nuo 10$ iki 10M$
+            'holders_total': (1, 100000),         # nuo 1 iki 100k
+            'liquidity_usd': (10, 10000000),      # nuo 10$ iki 10M$
+            'total_scans': (1, 1000000),          # negali būti 0
+            'traders_count': (1, 100000),         # negali būti 0
+            'bundle_count': (0, 0),               # visada 0
+            'mint_status': (0, 0),                # visada false (0)
+            'freeze_status': (0, 0),              # visada false (0)
+            'lp_status': (1, 1),                  # visada true (1)
+            'sniper_activity_tokens': (0, 0),     # visada 0
+            'bs_ratio_1h': (0.1, 10.0)           # nuo 0.1 iki 10.0
+        }
+
+    def _parse_ratio_value(self, ratio_str) -> float:
+        """Konvertuoja bs_ratio į float reikšmę
         
         Args:
-            ratio_str: Formatas "X/Y" kur X ir Y gali turėti K sufiksą
-            
+            ratio_str: Gali būti string "X/Y" formatu arba skaičius
+                
         Returns:
             float: Pirkimų/pardavimų santykis (buys/sells)
         """
+        # Jei paduotas skaičius
+        if isinstance(ratio_str, (int, float)):
+            return float(ratio_str) if ratio_str > 0 else 1.0
+            
         try:
             buys, sells = ratio_str.split('/')
             
@@ -1067,38 +1104,26 @@ class MLIntervalAnalyzer:
                 
             return buys / sells
             
-        except (ValueError, TypeError, ZeroDivisionError):
+        except (ValueError, TypeError, ZeroDivisionError, AttributeError):
             return 1.0  # Default santykis 1:1
 
-        # IQR daugikliai skirtingiems parametrams
-        self.IQR_MULTIPLIERS = {
-            'price_change_1h': 1.0,      # Mažesnis daugiklis kainų pokyčiams
-            'market_cap': 1.2,           # Vidutinis daugiklis market cap
-            'volume_1h': 1.2,            # Vidutinis daugiklis volume
-            'holders_total': 1.2,        # Vidutinis daugiklis holders
-            'total_scans': 1.2,          # Vidutinis daugiklis skanavimams
-            'traders_count': 1.2,        # Vidutinis daugiklis traders
-            'bs_ratio_1h': 1.0,          # Mažesnis daugiklis buy/sell ratio
-            'liquidity_usd': 1.2,        # Vidutinis daugiklis likvidumui
-            'default': 1.3               # Visiems kitiems
-        }
+    def validate_interval(self, feature: str, interval: dict) -> dict:
+        """Validuoja ir koreguoja intervalą pagal absoliučias ribas"""
+        if feature in self.ABSOLUTE_LIMITS:
+            min_limit, max_limit = self.ABSOLUTE_LIMITS[feature]
+            
+            # Pritaikome absoliučias ribas
+            interval['min'] = max(min_limit, interval['min'])
+            interval['max'] = min(max_limit, interval['max'])
+            
+            # Jei tai parametras su fiksuota reikšme (0 arba 1)
+            if min_limit == max_limit:
+                interval['mean'] = min_limit
+                interval['std'] = 0
+                
+        return interval
 
-        # Absoliučios ribos parametrams
-        self.ABSOLUTE_LIMITS = {
-            'price_change_1h': (-100, 1000),      # nuo -100% iki 1000%
-            'market_cap': (100, 1000000),      # nuo 100$ iki 1B$
-            'volume_1h': (10, 10000000),          # nuo 10$ iki 10M$
-            'holders_total': (1, 100000),         # nuo 1 iki 100k
-            'liquidity_usd': (10, 10000000),      # nuo 10$ iki 10M$
-            'total_scans': (1, 1000000),          # negali būti 0
-            'traders_count': (1, 100000),         # negali būti 0
-            'bundle_count': (0, 0),               # visada 0
-            'mint_status': (0, 0),                # visada false (0)
-            'freeze_status': (0, 0),              # visada false (0)
-            'lp_status': (1, 1),                  # visada true (1)
-            'sniper_activity_tokens': (0, 0),     # visada 0
-            'bs_ratio_1h': (0.1, 10.0)           # nuo 0.1 iki 10.0
-        }
+        
         
     def calculate_intervals(self, successful_gems: List[Dict]):
         """Nustato intervalus naudojant ML iš sėkmingų GEM duomenų"""
@@ -1152,13 +1177,15 @@ class MLIntervalAnalyzer:
                         'mean': mean_val,
                         'std': std_val
                     }
-                elif feature == 'bs_ratio_1h':
+                if feature == 'bs_ratio_1h':
+                    # bs_ratio apdorojamas atskirai
                     self.intervals[feature] = {
-                        'min': q1 - multiplier * iqr,
-                        'max': q3 + multiplier * iqr,
+                        'min': q1 - 1.5 * iqr,
+                        'max': q3 + 1.5 * iqr,
                         'mean': mean_val,
                         'std': std_val
                     }
+                    
                 elif feature in ['holders_total', 'volume_1h', 'market_cap', 'total_scans', 'traders_count']:
                     self.intervals[feature] = {
                         'min': max(1, q1 - multiplier * iqr),  # Minimali reikšmė bent 1
@@ -1198,15 +1225,33 @@ class MLIntervalAnalyzer:
         """Tikrina ar token'o parametrai patenka į ML nustatytus intervalus"""
         results = {}
         
+        # Pirma surenkame dev_bought ir dev_sold reikšmes
+        dev_bought_percentage = float(token_data.get('dev_bought_percentage', 0))
+        dev_sold_percentage = float(token_data.get('dev_sold_percentage', 0))
+        
         for feature in self.primary_features:
-            # Tiesiogiai imame reikšmę iš parametrų
             try:
-                value = float(token_data[feature] if token_data[feature] is not None else 0)
+                # Tiesiogiai imame reikšmę iš token_data
+                if feature == 'bs_ratio_1h':
+                    value = self._parse_ratio_value(token_data['bs_ratio_1h'])
+                elif feature == 'dev_sold_percentage':
+                    value = dev_sold_percentage
+                    # Jei dev_bought > 0, bet dev_sold = 0, laikome kad tai už intervalo
+                    if dev_bought_percentage > 0 and value == 0:
+                        results[feature] = {
+                            'value': value,
+                            'in_range': False,
+                            'z_score': float('inf'),
+                            'interval': self.intervals[feature]
+                        }
+                        continue
+                else:
+                    value = float(token_data[feature])
+                    
             except (ValueError, TypeError, KeyError):
-                value = 0.0
-                
-            interval = self.intervals[feature]
+                value = 1.0 if feature == 'bs_ratio_1h' else 0.0
             
+            interval = self.intervals[feature]
             in_range = interval['min'] <= value <= interval['max']
             z_score = abs((value - interval['mean']) / interval['std']) if interval['std'] > 0 else float('inf')
             
@@ -1216,10 +1261,10 @@ class MLIntervalAnalyzer:
                 'z_score': z_score,
                 'interval': interval
             }
-            
+        
         # Bendras rezultatas
         all_in_range = all(result['in_range'] for result in results.values())
-        avg_z_score = np.mean([result['z_score'] for result in results.values()])
+        avg_z_score = np.mean([result['z_score'] for result in results.values() if result['z_score'] != float('inf')])
         
         return {
             'passed': all_in_range,
