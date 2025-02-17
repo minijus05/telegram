@@ -29,7 +29,7 @@ class Config:
     # Telegram settings
     TELEGRAM_API_ID = '25425140'
     TELEGRAM_API_HASH = 'bd0054bc5393af360bc3930a27403c33'
-    TELEGRAM_SOURCE_CHATS = ['@solearlytrending', '@botubotass']
+    TELEGRAM_SOURCE_CHATS = ['@solearlytrending', '@HighVolumeBordga', '@botubotass', '@solanahypee']
     
     TELEGRAM_GEM_CHAT = '@testasmano'
     
@@ -41,11 +41,14 @@ class Config:
 
     USER_LOGIN = 'minijus05'
 
+    # IŠTRINTI TOKEN IŠ DUOMENŲ BAZĖZ, IŠ VISŲ IŠTRINA
+    # I GRUPE, TARKIM @BOTUBOTASS PARASYTI ŽINUTĘ         /delete TOKEN_ADRESAS
+
     # ML settings
-    MIN_GEMS_FOR_ANALYSIS = 10  # Minimalus GEM skaičius prieš pradedant analizę
+    MIN_GEMS_FOR_ANALYSIS = 5  # Minimalus GEM skaičius prieš pradedant analizę
 
     # GEM settings
-    GEM_MULTIPLIER = "2x"
+    GEM_MULTIPLIER = "10x"
     MIN_GEM_SCORE = 10
 
     # Žinutes siuntimas
@@ -107,18 +110,42 @@ class TokenMonitor:
     async def handle_new_message(self, event):
         try:
             message = event.message.text
-            token_addresses = self._extract_token_addresses(message)
+            token_addresses = []
+            
+            # Tikriname ar žinutė turi reply_to (atsakymas į kitą žinutę)
+            if event.message.reply_to:
+                try:
+                    # Gauname originalią žinutę į kurią atsakyta
+                    replied_msg = await event.message.get_reply_message()
+                    if replied_msg and replied_msg.text:
+                        reply_addresses = self._extract_token_addresses(replied_msg.text)
+                        token_addresses.extend(reply_addresses)
+                except Exception as e:
+                    logger.error(f"Error getting reply message: {e}")
+
+            # Tikriname pagrindinę žinutę
+            main_addresses = self._extract_token_addresses(message)
+            token_addresses.extend(main_addresses)
+            
+            # Pašaliname dublikatus
+            token_addresses = list(set(token_addresses))
+                        
             
             if token_addresses:
                 for address in token_addresses:
-                    is_new_token = "New" in message
-                    is_from_token = "from" in message.lower()
+                    is_new_token = "new" in message.lower() or "Marketcap" in message
+                    is_from_token = "from" in message.lower() or "MADE" in message or "🔝" in message
                     
                     # Patikriname ar token'as jau yra DB
                     self.db.cursor.execute("SELECT address FROM tokens WHERE address = ?", (address,))
                     token_exists = self.db.cursor.fetchone() is not None
                     
                     if is_new_token:
+                        # Jei token'as jau egzistuoja - praleidžiam
+                        if token_exists:
+                            print(f"\n[SKIPPED NEW] Token already exists in database: {address}")
+                            continue
+                            
                         print(f"\n[NEW TOKEN DETECTED] Address: {address}")
                         # Siunčiame į scanner grupę
                         original_message = await self.scanner_client.send_message(
@@ -185,6 +212,58 @@ class TokenMonitor:
         except Exception as e:
             logger.error(f"Error handling message: {e}")
             print(f"[ERROR] Message handling failed: {e}")
+
+    async def handle_delete_command(self, event):
+        """Handles the /delete command to remove tokens from database"""
+        try:
+            # Gauname komandos tekstą
+            message = event.message.text
+            
+            # Patikriname ar yra tokeno adresas
+            parts = message.split()
+            if len(parts) != 2:
+                await event.reply("❌ Please use format: /delete TOKEN_ADDRESS")
+                return
+                
+            token_address = parts[1].strip()
+            
+            # Patikriname ar token'as egzistuoja
+            self.db.cursor.execute("SELECT address FROM tokens WHERE address = ?", (token_address,))
+            if not self.db.cursor.fetchone():
+                await event.reply(f"❌ Token {token_address} not found in database")
+                return
+                
+            try:
+                # Ištriname susijusius duomenis iš visų lentelių
+                self.db.cursor.execute('BEGIN TRANSACTION')
+                
+                # Triname duomenis iš visų lentelių pagal eiliškumą (dėl foreign key constraints)
+                tables = [
+                    'token_analysis_results',
+                    'proficy_price_data',
+                    'syrax_scanner_data',
+                    'soul_scanner_data',
+                    'gem_tokens',
+                    'tokens'
+                ]
+                
+                for table in tables:
+                    if table == 'tokens':
+                        self.db.cursor.execute(f"DELETE FROM {table} WHERE address = ?", (token_address,))
+                    else:
+                        self.db.cursor.execute(f"DELETE FROM {table} WHERE token_address = ?", (token_address,))
+                
+                self.db.conn.commit()  # Naudojame conn vietoj connection
+                await event.reply(f"✅ Successfully deleted token {token_address} and all related data")
+                
+            except Exception as e:
+                self.db.conn.rollback()  # Naudojame conn vietoj connection
+                logger.error(f"Database error while deleting token: {e}")
+                await event.reply("❌ Database error occurred while deleting token")
+                
+        except Exception as e:
+            logger.error(f"Error handling delete command: {e}")
+            await event.reply("❌ Error occurred while deleting token")
 
     async def _collect_scanner_data(self, address, original_message):
         """Renka duomenis iš visų scannerių"""
@@ -322,6 +401,28 @@ class TokenMonitor:
         return (similarity_score >= Config.MIN_SIMILARITY_SCORE and 
                 confidence_level >= Config.MIN_CONFIDENCE_LEVEL)
 
+    async def send_analysis_alert(self, analysis_result: Dict, scanner_data: Dict):
+        """Siunčia analizės rezultatų žinutę į Telegram"""
+        try:
+            if not self.should_send_alert(
+                analysis_result['similarity_score'], 
+                analysis_result['confidence_level']
+            ):
+                return
+            
+            message = await self.format_analysis_message(analysis_result, scanner_data)
+            
+            await self.telegram.send_message(
+                Config.TELEGRAM_GEM_CHAT,
+                message,
+                parse_mode='Markdown',
+                link_preview=False
+            )
+            logger.info(f"Sent analysis alert with {analysis_result['similarity_score']}% similarity")
+        except Exception as e:
+            logger.error(f"Error sending analysis alert: {e}")
+            print(f"[ERROR] Failed to send analysis alert: {str(e)}")
+
     def get_current_time(self) -> tuple:
         """Grąžina dabartinį UTC ir UTC+2 laiką"""
         utc_now = datetime.now(timezone.utc)
@@ -411,39 +512,40 @@ class TokenMonitor:
     
     def _extract_token_addresses(self, message: str) -> List[str]:
         """Ištraukia token adresus iš žinutės"""
-        matches = []
-        
         try:
-            # Ieškome token adreso URL'uose
-            if "from" in message:  # Update žinutė
-                # Ieškome soul_scanner_bot URL
-                scanner_matches = re.findall(r'soul_scanner_bot/chart\?startapp=([A-Za-z0-9]{32,44})', message)
-                if scanner_matches:
-                    matches.extend(scanner_matches)
-                    
-            elif "New" in message:  # Nauja žinutė
-                # Ieškome soul_sniper_bot ir soul_scanner_bot URL
-                patterns = [
-                    r'soul_sniper_bot\?start=\d+_([A-Za-z0-9]{32,44})',
-                    r'soul_scanner_bot/chart\?startapp=([A-Za-z0-9]{32,44})'
-                ]
+            # Pirmiausiai ieškome tiesiogiai pateikto CA (Contract Address)
+            ca_match = re.search(r'(?:📃\s*CA:|CA:|solscan\.io/token/)([A-Za-z0-9]{32,44})', message, re.MULTILINE)
+            if ca_match and 32 <= len(ca_match.group(1)) <= 44:
+                addr = ca_match.group(1)
+                logger.info(f"Found token address from CA: {addr}")
+                return [addr]
+            
+            # Jei CA nerastas, ieškome per URL patterns prioriteto tvarka
+            patterns = [
+                # Soul Sniper bot (nauji tokenai)
+                r'soul_sniper_bot\?start=\d+_([A-Za-z0-9]{32,44})',
+                # Soul Scanner chart
+                r'soul_scanner_bot/chart\?startapp=([A-Za-z0-9]{32,44})',
+                # Soul Scanner start
+                r'soul_scanner_bot\?start=([A-Za-z0-9]{32,44})',
+                # Rugcheck
+                r'rugcheck\.xyz/tokens/([A-Za-z0-9]{32,44})'
+            ]
+            
+            # Ieškome per kiekvieną pattern, kol randame pirmą tinkamą adresą
+            for pattern in patterns:
+                match = re.search(pattern, message)
+                if match:
+                    addr = match.group(1)
+                    if 32 <= len(addr) <= 44:
+                        logger.info(f"Found token address: {addr}")
+                        return [addr]
+            
+            # Jei nieko neradome
+            return []
                 
-                for pattern in patterns:
-                    url_matches = re.findall(pattern, message)
-                    if url_matches:
-                        matches.extend(url_matches)
-            
-            # Pašaliname dublikatus ir filtruojame
-            unique_matches = list(set(matches))
-            valid_matches = [addr for addr in unique_matches if len(addr) >= 32 and len(addr) <= 44]
-            
-            if valid_matches:
-                logger.info(f"[2025-01-31 13:14:41] Found token address: {valid_matches[0]}")
-            
-            return valid_matches
-            
         except Exception as e:
-            logger.error(f"[2025-01-31 13:14:41] Error extracting token address: {e}")
+            logger.error(f"Error extracting token address: {e}")
             return []
         
     def clean_line(self, text: str) -> str:
@@ -501,15 +603,15 @@ class TokenMonitor:
                         data['symbol'] = parts[1].replace('**', '').strip()
                             
                     # Contract Address
-                    elif len(line.strip()) > 30 and not any(x in line for x in ['https://', '🌊', '🔫', '📈', '🔗', '•', '┗', '┣']):
+                    elif len(line.strip()) > 30 and not any(x in line for x in ['https://', '🌊', '🔫', '📈', '🔗', '•', '┗', '┣', '⚠️', '🚨']):
                         data['contract_address'] = line.strip().replace('`', '')
                     
                                                                
                     # Market Cap and ATH
                     elif 'MC:' in line:
                         # Market Cap gali būti K arba M
-                        mc_k = re.search(r'\$(\d+\.?\d*)K', clean_line)  # Ieškome K
-                        mc_m = re.search(r'\$(\d+\.?\d*)M', clean_line)  # Ieškome M
+                        mc_k = re.search(r'MC: \$(\d+\.?\d*)K', clean_line)  # Ieškome K
+                        mc_m = re.search(r'MC: \$(\d+\.?\d*)M', clean_line)  # Ieškome M
                         
                         if mc_m:  # Jei M (milijonai)
                             data['market_cap'] = float(mc_m.group(1)) * 1000000
@@ -866,6 +968,12 @@ class TokenMonitor:
                     return float(volume_str)
                 except (ValueError, TypeError):
                     return 0  # Grąžina 0 jei konvertavimas nepavyksta
+
+            def format_price_change(price: float) -> str:
+                """Helper function to format price change with K suffix if needed"""
+                if abs(price) >= 1000:
+                    return f"{price/1000:.1f}K"
+                return f"{price:.2f}"
             
             for line in lines:
                 if 'Price' in line and 'Volume' in line and 'B/S' in line:
@@ -874,7 +982,7 @@ class TokenMonitor:
                 if '5M:' in line:
                     parts = line.split()
                     data['5m'] = {
-                        'price_change': float(parts[1].replace('%', '')),
+                        'price_change': convert_volume(parts[1].replace('%', '')),
                         'volume': convert_volume(parts[2]),
                         'bs_ratio': parts[3]
                     }
@@ -882,7 +990,7 @@ class TokenMonitor:
                 if '1H:' in line:
                     parts = line.split()
                     data['1h'] = {
-                        'price_change': float(parts[1].replace('%', '')),
+                        'price_change': convert_volume(parts[1].replace('%', '')),
                         'volume': convert_volume(parts[2]),
                         'bs_ratio': parts[3]
                     }
@@ -898,29 +1006,37 @@ class MLIntervalAnalyzer:
     """ML klasė pirminių intervalų nustatymui"""
     def __init__(self):
         self.primary_features = [
-            # Syrax Scanner parametrai
-            'dev_created_tokens',
-            'same_name_count',
-            'same_website_count',
-            'same_telegram_count',
-            'same_twitter_count',
-            'dev_bought_percentage',
-            'dev_bought_curve_percentage',  # Pridėta
-            'dev_sold_percentage',          # Pridėta
-            'holders_total',
-            'holders_top10_percentage',     # Pridėta
-            'holders_top25_percentage',     # Pridėta
-            'holders_top50_percentage',     # Pridėta
-            # Soul Scanner parametrai
-            'market_cap',
-            'liquidity_usd',
-            # Proficy parametrai
-            'volume_1h',
-            'price_change_1h',
-            'bs_ratio_1h'                   # Pridėta
-        ]
+        # Syrax Scanner parametrai
+        'dev_created_tokens',
+        'same_name_count',
+        'same_website_count',
+        'same_telegram_count',
+        'same_twitter_count',
+        'dev_bought_percentage',
+        'dev_bought_curve_percentage',
+        'dev_sold_percentage',
+        'holders_total',
+        'holders_top10_percentage',
+        'holders_top25_percentage',
+        'holders_top50_percentage',
+        # Soul Scanner parametrai
+        'market_cap',
+        'liquidity_usd',
+        # Proficy parametrai
+        'volume_1h',
+        'price_change_1h',
+        'bs_ratio_1h',
+        # Nauji privalomi parametrai
+        'bundle_count',
+        'mint_status',
+        'freeze_status',
+        'lp_status',
+        'sniper_activity_tokens',
+        'total_scans',
+        'traders_count'
+    ]
         self.scaler = MinMaxScaler()
-        self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
+        self.isolation_forest = IsolationForest(contamination=0.4, random_state=42)
         self.intervals = {feature: {'min': float('inf'), 'max': float('-inf')} for feature in self.primary_features}
 
     def _parse_ratio_value(self, ratio_str: str) -> float:
@@ -953,6 +1069,36 @@ class MLIntervalAnalyzer:
             
         except (ValueError, TypeError, ZeroDivisionError):
             return 1.0  # Default santykis 1:1
+
+        # IQR daugikliai skirtingiems parametrams
+        self.IQR_MULTIPLIERS = {
+            'price_change_1h': 1.0,      # Mažesnis daugiklis kainų pokyčiams
+            'market_cap': 1.2,           # Vidutinis daugiklis market cap
+            'volume_1h': 1.2,            # Vidutinis daugiklis volume
+            'holders_total': 1.2,        # Vidutinis daugiklis holders
+            'total_scans': 1.2,          # Vidutinis daugiklis skanavimams
+            'traders_count': 1.2,        # Vidutinis daugiklis traders
+            'bs_ratio_1h': 1.0,          # Mažesnis daugiklis buy/sell ratio
+            'liquidity_usd': 1.2,        # Vidutinis daugiklis likvidumui
+            'default': 1.3               # Visiems kitiems
+        }
+
+        # Absoliučios ribos parametrams
+        self.ABSOLUTE_LIMITS = {
+            'price_change_1h': (-100, 1000),      # nuo -100% iki 1000%
+            'market_cap': (100, 1000000),      # nuo 100$ iki 1B$
+            'volume_1h': (10, 10000000),          # nuo 10$ iki 10M$
+            'holders_total': (1, 100000),         # nuo 1 iki 100k
+            'liquidity_usd': (10, 10000000),      # nuo 10$ iki 10M$
+            'total_scans': (1, 1000000),          # negali būti 0
+            'traders_count': (1, 100000),         # negali būti 0
+            'bundle_count': (0, 0),               # visada 0
+            'mint_status': (0, 0),                # visada false (0)
+            'freeze_status': (0, 0),              # visada false (0)
+            'lp_status': (1, 1),                  # visada true (1)
+            'sniper_activity_tokens': (0, 0),     # visada 0
+            'bs_ratio_1h': (0.1, 10.0)           # nuo 0.1 iki 10.0
+        }
         
     def calculate_intervals(self, successful_gems: List[Dict]):
         """Nustato intervalus naudojant ML iš sėkmingų GEM duomenų"""
@@ -996,30 +1142,54 @@ class MLIntervalAnalyzer:
                 mean_val = np.mean(normal_values)
                 std_val = np.std(normal_values)
                 
+                # Pasirenkame tinkamą daugiklį
+                multiplier = self.IQR_MULTIPLIERS.get(feature, self.IQR_MULTIPLIERS['default'])
+                
                 if feature == 'price_change_1h':
-                    # Tik kainų pokytis gali būti neigiamas
                     self.intervals[feature] = {
-                        'min': q1 - 1.5 * iqr,     # Leidžiame neigiamas reikšmes
-                        'max': q3 + 1.5 * iqr,
+                        'min': max(-100, q1 - multiplier * iqr),
+                        'max': min(1000, q3 + multiplier * iqr),
                         'mean': mean_val,
                         'std': std_val
                     }
                 elif feature == 'bs_ratio_1h':
-                    # bs_ratio apdorojamas atskirai
                     self.intervals[feature] = {
-                        'min': q1 - 1.5 * iqr,
-                        'max': q3 + 1.5 * iqr,
+                        'min': q1 - multiplier * iqr,
+                        'max': q3 + multiplier * iqr,
                         'mean': mean_val,
                         'std': std_val
+                    }
+                elif feature in ['holders_total', 'volume_1h', 'market_cap', 'total_scans', 'traders_count']:
+                    self.intervals[feature] = {
+                        'min': max(1, q1 - multiplier * iqr),  # Minimali reikšmė bent 1
+                        'max': q3 + multiplier * iqr,
+                        'mean': mean_val,
+                        'std': std_val
+                    }
+                elif feature in ['bundle_count', 'mint_status', 'freeze_status', 'sniper_activity_tokens']:
+                    self.intervals[feature] = {
+                        'min': 0,
+                        'max': 0,
+                        'mean': 0,
+                        'std': 0
+                    }
+                elif feature == 'lp_status':
+                    self.intervals[feature] = {
+                        'min': 1,
+                        'max': 1,
+                        'mean': 1,
+                        'std': 0
                     }
                 else:
-                    # Visi kiti parametrai turi būti teigiami
                     self.intervals[feature] = {
-                        'min': max(0, q1 - 1.5 * iqr),
-                        'max': q3 + 1.5 * iqr,
+                        'min': max(0, q1 - multiplier * iqr),
+                        'max': q3 + multiplier * iqr,
                         'mean': mean_val,
                         'std': std_val
                     }
+                
+                # Pritaikome absoliučias ribas
+                self.intervals[feature] = self.validate_interval(feature, self.intervals[feature])
         
         logger.info(f"ML intervalai atnaujinti sėkmingai su {len(successful_gems)} GEM'ais")
         return True
@@ -1062,7 +1232,7 @@ class MLGEMAnalyzer:
         """Inicializuoja ML GEM analizatorių"""
         self.interval_analyzer = MLIntervalAnalyzer()
         self.scaler = MinMaxScaler()
-        self.isolation_forest = IsolationForest(contamination=0.1, random_state=42)
+        self.isolation_forest = IsolationForest(contamination=0.4, random_state=42)
         self.db = DatabaseManager()
         
         # Apibrėžiame pagrindinius parametrus analizei
@@ -1753,6 +1923,11 @@ async def main():
         async def message_handler(event):
             await monitor.handle_new_message(event)
 
+        # Pridedame delete komandą
+        @monitor.telegram.on(events.NewMessage(pattern='/delete'))
+        async def delete_handler(event):
+            await monitor.handle_delete_command(event)
+
         print("Bot started! Press Ctrl+C to stop.")
         
         await monitor.telegram.run_until_disconnected()
@@ -2160,6 +2335,21 @@ class DatabaseManager:
             print(f"[ERROR] Error type: {type(e).__name__}")
             self.conn.rollback()
             return False
+
+    def delete_token(self, token_address: str):
+        try:
+            self.cursor.execute("""
+                DELETE FROM proficy_price_data WHERE token_address = %s;
+                DELETE FROM syrax_scanner_data WHERE token_address = %s;
+                DELETE FROM soul_scanner_data WHERE token_address = %s;
+                DELETE FROM gem_tokens WHERE token_address = %s;
+                DELETE FROM tokens WHERE address = %s;
+            """, (token_address, token_address, token_address, token_address, token_address))
+            self.connection.commit()
+            print(f"Successfully deleted token {token_address} and all related data")
+        except Exception as e:
+            self.connection.rollback()
+            print(f"Error deleting token: {e}")
     
     def load_gem_tokens(self) -> List[Dict]:
         """Užkrauna visus GEM token'us su jų pradiniais duomenimis ML analizei"""
