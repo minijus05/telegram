@@ -1225,33 +1225,62 @@ class MLIntervalAnalyzer:
         """Tikrina ar token'o parametrai patenka į ML nustatytus intervalus"""
         results = {}
         
-        # Pirma surenkame dev_bought ir dev_sold reikšmes
-        dev_bought_percentage = float(token_data.get('dev_bought_percentage', 0))
-        dev_sold_percentage = float(token_data.get('dev_sold_percentage', 0))
+        def _parse_ratio_value(ratio_str: str) -> float:
+            """Konvertuoja bs_ratio string į float reikšmę
+            
+            Args:
+                ratio_str: Formatas "X/Y" kur X ir Y gali turėti K sufiksą
+                
+            Returns:
+                float: Pirkimų/pardavimų santykis (buys/sells)
+            """
+            try:
+                buys, sells = ratio_str.split('/')
+                
+                # Konvertuojame K į tūkstančius
+                def convert_k(val: str) -> float:
+                    val = val.strip()
+                    if 'K' in val:
+                        return float(val.replace('K', '')) * 1000
+                    return float(val)
+                
+                buys = convert_k(buys)
+                sells = convert_k(sells)
+                
+                # Grąžiname tikrąjį santykį buys/sells
+                if sells == 0:
+                    return 1.0  # Jei nėra pardavimų, grąžiname 1
+                    
+                return buys / sells
+                
+            except (ValueError, TypeError, ZeroDivisionError):
+                return 1.0  # Default santykis 1:1
         
         for feature in self.primary_features:
             try:
-                # Tiesiogiai imame reikšmę iš token_data
+                # Tiesiogiai imame reikšmę iš parametrų
                 if feature == 'bs_ratio_1h':
-                    value = self._parse_ratio_value(token_data['bs_ratio_1h'])
-                elif feature == 'dev_sold_percentage':
-                    value = dev_sold_percentage
-                    # Jei dev_bought > 0, bet dev_sold = 0, laikome kad tai už intervalo
-                    if dev_bought_percentage > 0 and value == 0:
-                        results[feature] = {
-                            'value': value,
-                            'in_range': False,
-                            'z_score': float('inf'),
-                            'interval': self.intervals[feature]
-                        }
-                        continue
+                    value = _parse_ratio_value(token_data[feature] if token_data[feature] is not None else '1/1')
                 else:
-                    value = float(token_data[feature])
+                    value = float(token_data[feature] if token_data[feature] is not None else 0)
                     
+                    # Dev sold percentage tikrinimas
+                    if feature == 'dev_sold_percentage':
+                        dev_bought = float(token_data['dev_bought_percentage'] if token_data['dev_bought_percentage'] is not None else 0)
+                        if dev_bought > 0 and value == 0:
+                            results[feature] = {
+                                'value': value,
+                                'in_range': False,
+                                'z_score': float('inf'),
+                                'interval': self.intervals[feature]
+                            }
+                            continue
+                            
             except (ValueError, TypeError, KeyError):
                 value = 1.0 if feature == 'bs_ratio_1h' else 0.0
-            
+                
             interval = self.intervals[feature]
+            
             in_range = interval['min'] <= value <= interval['max']
             z_score = abs((value - interval['mean']) / interval['std']) if interval['std'] > 0 else float('inf')
             
@@ -1261,7 +1290,7 @@ class MLIntervalAnalyzer:
                 'z_score': z_score,
                 'interval': interval
             }
-        
+            
         # Bendras rezultatas
         all_in_range = all(result['in_range'] for result in results.values())
         avg_z_score = np.mean([result['z_score'] for result in results.values() if result['z_score'] != float('inf')])
