@@ -1155,12 +1155,24 @@ class MLIntervalAnalyzer:
         
         # Nustatome intervalus kiekvienam parametrui
         for i, feature in enumerate(self.primary_features):
+            # Pirma patikriname ar yra fixed value absolute limits
+            if feature in self.ABSOLUTE_LIMITS:
+                min_limit, max_limit = self.ABSOLUTE_LIMITS[feature]
+                if min_limit == max_limit:  # Fixed value parametrai
+                    self.intervals[feature] = {
+                        'min': min_limit,
+                        'max': max_limit,
+                        'mean': min_limit,
+                        'std': 0
+                    }
+                    continue  # Skip statistical analysis for fixed values
+            
+            # Statistinė analizė
             values = X[:, i]
             predictions = self.isolation_forest.predict(X_scaled)
             normal_values = values[predictions == 1]
             
             if len(normal_values) > 0:
-                # Statistinė analizė
                 q1 = np.percentile(normal_values, 25)
                 q3 = np.percentile(normal_values, 75)
                 iqr = q3 - q1
@@ -1170,53 +1182,21 @@ class MLIntervalAnalyzer:
                 # Pasirenkame tinkamą daugiklį
                 multiplier = self.IQR_MULTIPLIERS.get(feature, self.IQR_MULTIPLIERS['default'])
                 
-                if feature == 'price_change_1h':
-                    self.intervals[feature] = {
-                        'min': max(-100, q1 - multiplier * iqr),
-                        'max': min(1000, q3 + multiplier * iqr),
-                        'mean': mean_val,
-                        'std': std_val
-                    }
-                if feature == 'bs_ratio_1h':
-                    # bs_ratio apdorojamas atskirai
-                    self.intervals[feature] = {
-                        'min': q1 - 1.5 * iqr,
-                        'max': q3 + 1.5 * iqr,
-                        'mean': mean_val,
-                        'std': std_val
-                    }
-                    
-                elif feature in ['holders_total', 'volume_1h', 'market_cap', 'total_scans', 'traders_count']:
-                    self.intervals[feature] = {
-                        'min': max(1, q1 - multiplier * iqr),  # Minimali reikšmė bent 1
-                        'max': q3 + multiplier * iqr,
-                        'mean': mean_val,
-                        'std': std_val
-                    }
-                elif feature in ['bundle_count', 'mint_status', 'freeze_status', 'sniper_activity_tokens']:
-                    self.intervals[feature] = {
-                        'min': 0,
-                        'max': 0,
-                        'mean': 0,
-                        'std': 0
-                    }
-                elif feature == 'lp_status':
-                    self.intervals[feature] = {
-                        'min': 1,
-                        'max': 1,
-                        'mean': 1,
-                        'std': 0
-                    }
-                else:
-                    self.intervals[feature] = {
-                        'min': max(0, q1 - multiplier * iqr),
-                        'max': q3 + multiplier * iqr,
-                        'mean': mean_val,
-                        'std': std_val
-                    }
+                # Base interval calculation
+                interval = {
+                    'min': q1 - multiplier * iqr,
+                    'max': q3 + multiplier * iqr,
+                    'mean': mean_val,
+                    'std': std_val
+                }
                 
-                # Pritaikome absoliučias ribas
-                self.intervals[feature] = self.validate_interval(feature, self.intervals[feature])
+                # Pritaikome specific rules ir absolute limits
+                if feature in self.ABSOLUTE_LIMITS:
+                    min_limit, max_limit = self.ABSOLUTE_LIMITS[feature]
+                    interval['min'] = max(min_limit, interval['min'])
+                    interval['max'] = min(max_limit, interval['max'])
+                
+                self.intervals[feature] = interval
         
         logger.info(f"ML intervalai atnaujinti sėkmingai su {len(successful_gems)} GEM'ais")
         return True
@@ -1225,48 +1205,18 @@ class MLIntervalAnalyzer:
         """Tikrina ar token'o parametrai patenka į ML nustatytus intervalus"""
         results = {}
         
-        def _parse_ratio_value(ratio_str: str) -> float:
-            """Konvertuoja bs_ratio string į float reikšmę
-            
-            Args:
-                ratio_str: Formatas "X/Y" kur X ir Y gali turėti K sufiksą
-                
-            Returns:
-                float: Pirkimų/pardavimų santykis (buys/sells)
-            """
-            try:
-                buys, sells = ratio_str.split('/')
-                
-                # Konvertuojame K į tūkstančius
-                def convert_k(val: str) -> float:
-                    val = val.strip()
-                    if 'K' in val:
-                        return float(val.replace('K', '')) * 1000
-                    return float(val)
-                
-                buys = convert_k(buys)
-                sells = convert_k(sells)
-                
-                # Grąžiname tikrąjį santykį buys/sells
-                if sells == 0:
-                    return 1.0  # Jei nėra pardavimų, grąžiname 1
-                    
-                return buys / sells
-                
-            except (ValueError, TypeError, ZeroDivisionError):
-                return 1.0  # Default santykis 1:1
-        
         for feature in self.primary_features:
             try:
                 # Tiesiogiai imame reikšmę iš parametrų
                 if feature == 'bs_ratio_1h':
-                    value = _parse_ratio_value(token_data[feature] if token_data[feature] is not None else '1/1')
+                    value = self._parse_ratio_value(token_data[feature] if token_data[feature] is not None else '1/1')
                 else:
                     value = float(token_data[feature] if token_data[feature] is not None else 0)
                     
-                    # Dev sold percentage tikrinimas
+                    # Svarbi dev_sold_percentage patikra
                     if feature == 'dev_sold_percentage':
                         dev_bought = float(token_data['dev_bought_percentage'] if token_data['dev_bought_percentage'] is not None else 0)
+                        # Jei dev'as pirko bet dar nepardavė - rizikinga situacija
                         if dev_bought > 0 and value == 0:
                             results[feature] = {
                                 'value': value,
@@ -1275,7 +1225,7 @@ class MLIntervalAnalyzer:
                                 'interval': self.intervals[feature]
                             }
                             continue
-                            
+                                
             except (ValueError, TypeError, KeyError):
                 value = 1.0 if feature == 'bs_ratio_1h' else 0.0
                 
@@ -1598,7 +1548,14 @@ class MLGEMAnalyzer:
                     'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
                     'volume_1h': float(db_data.get('volume_1h', 0)),
                     'price_change_1h': float(db_data.get('price_change_1h', 0)),
-                    'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
+                    'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1')),
+                    'mint_status': float(db_data.get('mint_status', 0)),
+                    'freeze_status': float(db_data.get('freeze_status', 0)),
+                    'lp_status': float(db_data.get('lp_status', 0)),
+                    'total_scans': float(db_data.get('total_scans', 0)),
+                    'bundle_count': float(db_data.get('bundle_count', 0)),
+                    'sniper_activity_tokens': float(db_data.get('sniper_activity_tokens', 0)),
+                    'traders_count': float(db_data.get('traders_count', 0))
                 }
 
                 # Pirminė parametrų patikra
