@@ -29,7 +29,7 @@ class Config:
     # Telegram settings
     TELEGRAM_API_ID = '25425140'
     TELEGRAM_API_HASH = 'bd0054bc5393af360bc3930a27403c33'
-    TELEGRAM_SOURCE_CHATS = ['@PumpFunRaydium', '@botubotass'] #'@solearlytrending', '@HighVolumeBordga', '@solanahypee'
+    TELEGRAM_SOURCE_CHATS = ['@PumpFunRaydium', '@botubotass', '@solearlytrending'] #'@solearlytrending', '@HighVolumeBordga', '@solanahypee'
     
     TELEGRAM_GEM_CHAT = '@testasmano'
     
@@ -133,7 +133,7 @@ class TokenMonitor:
             
             if token_addresses:
                 for address in token_addresses:
-                    is_new_token = "new" in message.lower() or "migration" in message
+                    is_new_token = "ddnew" in message.lower() or "migration" in message
                     is_from_token = "from" in message.lower() or "MADE" in message or "🔝" in message
                     
                     # Patikriname ar token'as jau yra DB
@@ -1111,12 +1111,12 @@ class MLIntervalAnalyzer:
         # Absoliučios ribos parametrams
         self.ABSOLUTE_LIMITS = {
             'price_change_1h': (-100, 1000),      # nuo -100% iki 1000%
-            'market_cap': (100, 1000000),      # nuo 100$ iki 1B$
+            'market_cap': (5000, 1000000),      # nuo 100$ iki 1B$
             'volume_1h': (10, 10000000),          # nuo 10$ iki 10M$
-            'holders_total': (100, 100000),         # nuo 1 iki 100k
+            'holders_total': (5, 100000),         # nuo 1 iki 100k
             'liquidity_usd': (0, 10000000),      # nuo 10$ iki 10M$
             'total_scans': (10, 1000000),          # negali būti 0
-            'traders_count': (100, 100000),         # negali būti 0
+            'traders_count': (5, 100000),         # negali būti 0
             'bundle_count': (0, 0),               # visada 0
             'mint_status': (0, 0),                # visada false (0)
             'freeze_status': (0, 0),              # visada false (0)
@@ -1216,11 +1216,35 @@ class MLIntervalAnalyzer:
             logger.warning(f"Nepakanka duomenų ML intervalų nustatymui. Reikia bent {Config.MIN_GEMS_FOR_ANALYSIS} GEM'ų. Dabartinis kiekis: {len(successful_gems)}")
             return False
                 
-        # Toliau vykdome tik jei yra pakankamai duomenų
+        # Pradžioje nustatome intervalus iš ABSOLUTE_LIMITS visiems parametrams, kurie turi fiksuotas ribas
+        for feature in self.primary_features:
+            if feature in self.ABSOLUTE_LIMITS:
+                min_limit, max_limit = self.ABSOLUTE_LIMITS[feature]
+                if min_limit == max_limit:
+                    self.intervals[feature] = {
+                        'min': min_limit,
+                        'max': max_limit,
+                        'mean': min_limit,
+                        'std': 0
+                    }
+                elif feature in ['sniper_activity_percentage', 'notable_bundle_supply_percentage', 'bundle_supply_percentage']:
+                    self.intervals[feature] = {
+                        'min': min_limit,
+                        'max': max_limit,
+                        'mean': (min_limit + max_limit) / 2,
+                        'std': (max_limit - min_limit) / 4
+                    }
+
+        # Toliau vykdome tik parametrams, kurie neturi fiksuotų reikšmių
         X = []
+        dynamic_features = []
+        for feature in self.primary_features:
+            if feature not in self.ABSOLUTE_LIMITS or self.ABSOLUTE_LIMITS[feature][0] != self.ABSOLUTE_LIMITS[feature][1]:
+                dynamic_features.append(feature)
+
         for gem in successful_gems:
             features = []
-            for feature in self.primary_features:
+            for feature in dynamic_features:
                 try:
                     if feature == 'bs_ratio_1h':
                         ratio_str = gem[feature] if gem[feature] is not None else '1/1'
@@ -1230,58 +1254,45 @@ class MLIntervalAnalyzer:
                 except (ValueError, TypeError):
                     value = 1.0 if feature == 'bs_ratio_1h' else 0.0
                 features.append(value)
-            X.append(features)
+            if features:  # Pridedame tik jei yra dinaminių parametrų
+                X.append(features)
         
-        X = np.array(X)
-        
-        # Apmokome Isolation Forest
-        X_scaled = self.scaler.fit_transform(X)
-        self.isolation_forest.fit(X_scaled)
-        
-        # Nustatome intervalus kiekvienam parametrui
-        for i, feature in enumerate(self.primary_features):
-            values = X[:, i]
-            predictions = self.isolation_forest.predict(X_scaled)
-            normal_values = values[predictions == 1]
+        if X:  # Tęsiame tik jei turime dinaminių parametrų
+            X = np.array(X)
             
-            if len(normal_values) > 0:
-                # Statistinė analizė - ML nustato intervalus
-                q1 = np.percentile(normal_values, 25)
-                q3 = np.percentile(normal_values, 75)
-                iqr = q3 - q1
-                mean_val = np.mean(normal_values)
-                std_val = np.std(normal_values)
+            # Apmokome Isolation Forest
+            X_scaled = self.scaler.fit_transform(X)
+            self.isolation_forest.fit(X_scaled)
+            
+            # Nustatome intervalus kiekvienam dinaminiam parametrui
+            for i, feature in enumerate(dynamic_features):
+                values = X[:, i]
+                predictions = self.isolation_forest.predict(X_scaled)
+                normal_values = values[predictions == 1]
                 
-                # Pasirenkame tinkamą daugiklį
-                multiplier = self.IQR_MULTIPLIERS.get(feature, self.IQR_MULTIPLIERS['default'])
-                
-                # ML nustatytas intervalas
-                interval = {
-                    'min': q1 - multiplier * iqr,
-                    'max': q3 + multiplier * iqr,
-                    'mean': mean_val,
-                    'std': std_val
-                }
-                
-                # Tik po ML nustatymo, patikriname ar reikia taikyti ABSOLUTE_LIMITS
-                if feature in self.ABSOLUTE_LIMITS:
-                    min_limit, max_limit = self.ABSOLUTE_LIMITS[feature]
-                    if min_limit == max_limit:
-                        # Fixed value parametrams vis tiek naudojame absoliučias reikšmes
-                        interval = {
-                            'min': min_limit,
-                            'max': max_limit,
-                            'mean': min_limit,
-                            'std': 0
-                        }
-                    else:
-                        # Kitiems parametrams ABSOLUTE_LIMITS tik kaip saugiklis
-                        if interval['min'] < min_limit:
-                            interval['min'] = min_limit
-                        if interval['max'] > max_limit:
-                            interval['max'] = max_limit
-                
-                self.intervals[feature] = interval
+                if len(normal_values) > 0:
+                    q1 = np.percentile(normal_values, 25)
+                    q3 = np.percentile(normal_values, 75)
+                    iqr = q3 - q1
+                    mean_val = np.mean(normal_values)
+                    std_val = np.std(normal_values)
+                    
+                    multiplier = self.IQR_MULTIPLIERS.get(feature, self.IQR_MULTIPLIERS['default'])
+                    
+                    interval = {
+                        'min': q1 - multiplier * iqr,
+                        'max': q3 + multiplier * iqr,
+                        'mean': mean_val,
+                        'std': std_val
+                    }
+                    
+                    # Pritaikome ABSOLUTE_LIMITS kaip saugiklius
+                    if feature in self.ABSOLUTE_LIMITS:
+                        min_limit, max_limit = self.ABSOLUTE_LIMITS[feature]
+                        interval['min'] = max(min_limit, interval['min'])
+                        interval['max'] = min(max_limit, interval['max'])
+                    
+                    self.intervals[feature] = interval
         
         logger.info(f"ML intervalai atnaujinti sėkmingai su {len(successful_gems)} GEM'ais")
         return True
@@ -1290,12 +1301,10 @@ class MLIntervalAnalyzer:
         """Tikrina ar token'o parametrai patenka į ML nustatytus intervalus"""
         results = {}
 
-        for feature in self.primary_features:
-            # PRIDĖTI ŠIĄ PATIKRĄ:
-            if not self.filter_status.get(feature, True):
-                continue
+        # Tikriname TIK įjungtus filtrus
+        enabled_features = [f for f in self.primary_features if self.filter_status.get(f, False)]
         
-        for feature in self.primary_features:
+        for feature in enabled_features:  # Keičiame iš self.primary_features į enabled_features
             try:
                 # Tiesiogiai imame reikšmę iš parametrų
                 if feature == 'bs_ratio_1h':
@@ -1331,7 +1340,7 @@ class MLIntervalAnalyzer:
                 'interval': interval
             }
             
-        # Bendras rezultatas
+        # Bendras rezultatas - skaičiuojame TIK iš įjungtų filtrų rezultatų
         all_in_range = all(result['in_range'] for result in results.values())
         avg_z_score = np.mean([result['z_score'] for result in results.values() if result['z_score'] != float('inf')])
         
@@ -1356,7 +1365,11 @@ class MLGEMAnalyzer:
             'dev_bought_curve_percentage', 'dev_sold_percentage', 'holders_total',
             'holders_top10_percentage', 'holders_top25_percentage',
             'holders_top50_percentage', 'market_cap', 'liquidity_usd',
-            'volume_1h', 'price_change_1h', 'bs_ratio_1h'
+            'volume_1h', 'price_change_1h', 'bs_ratio_1h',
+            # Nauji parametrai
+            'sniper_activity_percentage',
+            'notable_bundle_supply_percentage',
+            'bundle_supply_percentage'
         ]
         
         # Apibrėžiame visus ML features pagal scannerius
@@ -1620,33 +1633,90 @@ class MLGEMAnalyzer:
             print(json.dumps(db_data, indent=2))
 
             try:
-                # Suformuojame primary check duomenis
-                primary_data = {
-                    'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
-                    'same_name_count': float(db_data.get('same_name_count', 0)),
-                    'same_website_count': float(db_data.get('same_website_count', 0)),
-                    'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
-                    'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
-                    'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
-                    'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
-                    'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0)),
-                    'holders_total': float(db_data.get('holders_total', 0)),
-                    'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
-                    'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
-                    'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
-                    'market_cap': float(db_data.get('market_cap', 0)),
-                    'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
-                    'volume_1h': float(db_data.get('volume_1h', 0)),
-                    'price_change_1h': float(db_data.get('price_change_1h', 0)),
-                    'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1')),
-                    'mint_status': float(db_data.get('mint_status', 0)),
-                    'freeze_status': float(db_data.get('freeze_status', 0)),
-                    'lp_status': float(db_data.get('lp_status', 0)),
-                    'total_scans': float(db_data.get('total_scans', 0)),
-                    'bundle_count': float(db_data.get('bundle_count', 0)),
-                    'sniper_activity_tokens': float(db_data.get('sniper_activity_tokens', 0)),
-                    'traders_count': float(db_data.get('traders_count', 0))
-                }
+                # Suformuojame primary check duomenis TIK įjungtiems filtrams
+                primary_data = {}
+                
+                if self.interval_analyzer.filter_status.get('dev_created_tokens', False):
+                    primary_data['dev_created_tokens'] = float(db_data.get('dev_created_tokens', 0))
+                    
+                if self.interval_analyzer.filter_status.get('same_name_count', False):
+                    primary_data['same_name_count'] = float(db_data.get('same_name_count', 0))
+                    
+                if self.interval_analyzer.filter_status.get('same_website_count', False):
+                    primary_data['same_website_count'] = float(db_data.get('same_website_count', 0))
+                    
+                if self.interval_analyzer.filter_status.get('same_telegram_count', False):
+                    primary_data['same_telegram_count'] = float(db_data.get('same_telegram_count', 0))
+                    
+                if self.interval_analyzer.filter_status.get('same_twitter_count', False):
+                    primary_data['same_twitter_count'] = float(db_data.get('same_twitter_count', 0))
+                    
+                if self.interval_analyzer.filter_status.get('dev_bought_percentage', False):
+                    primary_data['dev_bought_percentage'] = float(db_data.get('dev_bought_percentage', 0))
+                    
+                if self.interval_analyzer.filter_status.get('dev_bought_curve_percentage', False):
+                    primary_data['dev_bought_curve_percentage'] = float(db_data.get('dev_bought_curve_percentage', 0))
+                    
+                if self.interval_analyzer.filter_status.get('dev_sold_percentage', False):
+                    primary_data['dev_sold_percentage'] = float(db_data.get('dev_sold_percentage', 0))
+                    
+                if self.interval_analyzer.filter_status.get('holders_total', False):
+                    primary_data['holders_total'] = float(db_data.get('holders_total', 0))
+                    
+                if self.interval_analyzer.filter_status.get('holders_top10_percentage', False):
+                    primary_data['holders_top10_percentage'] = float(db_data.get('holders_top10_percentage', 0))
+                    
+                if self.interval_analyzer.filter_status.get('holders_top25_percentage', False):
+                    primary_data['holders_top25_percentage'] = float(db_data.get('holders_top25_percentage', 0))
+                    
+                if self.interval_analyzer.filter_status.get('holders_top50_percentage', False):
+                    primary_data['holders_top50_percentage'] = float(db_data.get('holders_top50_percentage', 0))
+                    
+                if self.interval_analyzer.filter_status.get('market_cap', False):
+                    primary_data['market_cap'] = float(db_data.get('market_cap', 0))
+                    
+                if self.interval_analyzer.filter_status.get('liquidity_usd', False):
+                    primary_data['liquidity_usd'] = float(db_data.get('liquidity_usd', 0))
+                    
+                if self.interval_analyzer.filter_status.get('volume_1h', False):
+                    primary_data['volume_1h'] = float(db_data.get('volume_1h', 0))
+                    
+                if self.interval_analyzer.filter_status.get('price_change_1h', False):
+                    primary_data['price_change_1h'] = float(db_data.get('price_change_1h', 0))
+                    
+                if self.interval_analyzer.filter_status.get('bs_ratio_1h', False):
+                    primary_data['bs_ratio_1h'] = self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
+                    
+                if self.interval_analyzer.filter_status.get('mint_status', False):
+                    primary_data['mint_status'] = float(db_data.get('mint_status', 0))
+                    
+                if self.interval_analyzer.filter_status.get('freeze_status', False):
+                    primary_data['freeze_status'] = float(db_data.get('freeze_status', 0))
+                    
+                if self.interval_analyzer.filter_status.get('lp_status', False):
+                    primary_data['lp_status'] = float(db_data.get('lp_status', 0))
+                    
+                if self.interval_analyzer.filter_status.get('total_scans', False):
+                    primary_data['total_scans'] = float(db_data.get('total_scans', 0))
+                    
+                if self.interval_analyzer.filter_status.get('bundle_count', False):
+                    primary_data['bundle_count'] = float(db_data.get('bundle_count', 0))
+                    
+                if self.interval_analyzer.filter_status.get('sniper_activity_tokens', False):
+                    primary_data['sniper_activity_tokens'] = float(db_data.get('sniper_activity_tokens', 0))
+                    
+                if self.interval_analyzer.filter_status.get('traders_count', False):
+                    primary_data['traders_count'] = float(db_data.get('traders_count', 0))
+                    
+                if self.interval_analyzer.filter_status.get('sniper_activity_percentage', False):
+                    primary_data['sniper_activity_percentage'] = float(db_data.get('sniper_activity_percentage', 0))
+                    
+                if self.interval_analyzer.filter_status.get('notable_bundle_supply_percentage', False):
+                    primary_data['notable_bundle_supply_percentage'] = float(db_data.get('notable_bundle_supply_percentage', 0))
+                    
+                if self.interval_analyzer.filter_status.get('bundle_supply_percentage', False):
+                    primary_data['bundle_supply_percentage'] = float(db_data.get('bundle_supply_percentage', 0))
+                
 
                 # Pirminė parametrų patikra
                 primary_check = self.interval_analyzer.check_primary_parameters(primary_data)
