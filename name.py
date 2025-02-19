@@ -29,7 +29,7 @@ class Config:
     # Telegram settings
     TELEGRAM_API_ID = '25425140'
     TELEGRAM_API_HASH = 'bd0054bc5393af360bc3930a27403c33'
-    TELEGRAM_SOURCE_CHATS = ['@solearlytrending', '@HighVolumeBordga', '@botubotass', '@solanahypee']
+    TELEGRAM_SOURCE_CHATS = ['@PumpFunRaydium', '@botubotass'] #'@solearlytrending', '@HighVolumeBordga', '@solanahypee'
     
     TELEGRAM_GEM_CHAT = '@testasmano'
     
@@ -53,7 +53,7 @@ class Config:
 
     # Žinutes siuntimas
     MIN_SIMILARITY_SCORE = 1.0
-    MIN_CONFIDENCE_LEVEL = 1.0
+    MIN_CONFIDENCE_LEVEL = 0.0
     
 
 class TokenMonitor:
@@ -133,7 +133,7 @@ class TokenMonitor:
             
             if token_addresses:
                 for address in token_addresses:
-                    is_new_token = "new" in message.lower() or "Marketcap" in message
+                    is_new_token = "New" in message.lower() or "Marketcap" or "migration" in message
                     is_from_token = "from" in message.lower() or "MADE" in message or "🔝" in message
                     
                     # Patikriname ar token'as jau yra DB
@@ -470,41 +470,12 @@ class TokenMonitor:
     Confidence Level: {analysis_result['confidence_level']:.1f}%
     Recommendation: {analysis_result['recommendation']}
 
-    🔍 Token Analysis Results
-    ⏰ UTC: {utc_time}
-
+    
     Token Address:
     `{token_address}`
     [View on GMGN](https://gmgn.ai/sol/token/{soul_data['contract_address']})
 
-    Primary Parameters:
-    • Dev Created Tokens:
-      - Value: `{syrax_data['dev_created_tokens']}`
-      - Z-Score: `{analysis_result['primary_check']['details']['dev_created_tokens']['z_score']:.4f}`
-
-    • Similar Tokens:
-      - Name Count: `{syrax_data['same_name_count']}`
-      - Website Count: `{syrax_data['same_website_count']}`
-      - Telegram Count: `{syrax_data['same_telegram_count']}`
-      - Twitter Count: `{syrax_data['same_twitter_count']}`
-
-    • Dev Activity:
-      - Bought %: `{syrax_data['dev_bought']['percentage']}`%
-      - Bought Curve %: `{syrax_data['dev_bought']['curve_percentage']}`%
-      - Sold %: `{syrax_data['dev_sold']['percentage']}`%
-
-    • Holders Distribution:
-      - Total: `{syrax_data['holders']['total']}`
-      - Top 10%: `{syrax_data['holders']['top10_percentage']}`%
-      - Top 25%: `{syrax_data['holders']['top25_percentage']}`%
-      - Top 50%: `{syrax_data['holders']['top50_percentage']}`%
-
-    • Market Metrics:
-      - Market Cap: `${soul_data['market_cap']:,.2f}`
-      - Liquidity USD: `${soul_data['liquidity']['usd']:,.2f}`
-      - Volume (1h): `${proficy_data['1h']['volume']:,.2f}`
-      - Price Change (1h): `{proficy_data['1h']['price_change']}`%
-
+    
     TokenAnalysis"""
 
         return message
@@ -514,11 +485,12 @@ class TokenMonitor:
         """Ištraukia token adresus iš žinutės"""
         try:
             # Pirmiausiai ieškome tiesiogiai pateikto CA (Contract Address)
-            ca_match = re.search(r'(?:📃\s*CA:|CA:|solscan\.io/token/)([A-Za-z0-9]{32,44})', message, re.MULTILINE)
-            if ca_match and 32 <= len(ca_match.group(1)) <= 44:
-                addr = ca_match.group(1)
-                logger.info(f"Found token address from CA: {addr}")
-                return [addr]
+            ca_match = re.search(r'(?:📃\s*CA:|CA:|🔸\s*Contract Address:\s*)([A-Za-z0-9]{32,44})|(?:\[Token Details\].*?🔸\s*Contract Address:\s*)([A-Za-z0-9]{32,44})', message, re.MULTILINE | re.IGNORECASE | re.DOTALL)
+            if ca_match:
+                addr = ca_match.group(1) if ca_match.group(1) else ca_match.group(2)
+                if 32 <= len(addr) <= 44:
+                    logger.info(f"Found token address from CA: {addr}")
+                    return [addr]
             
             # Jei CA nerastas, ieškome per URL patterns prioriteto tvarka
             patterns = [
@@ -954,9 +926,28 @@ class TokenMonitor:
     async def parse_proficy_price(self, message: str) -> Dict:
         """Parse ProficyPriceBot message"""
         try:
-            data = {}
+            # 1. PAKEISTI: Inicializuojame data su None reikšmėmis vietoj 'N/A'
+            data = {
+                '5m': {
+                    'price_change': None,
+                    'volume': None,
+                    'bs_ratio': None
+                },
+                '1h': {
+                    'price_change': None,
+                    'volume': None,
+                    'bs_ratio': None
+                }
+            }
+
+            # 2. PRIDĖTI: Patikrinimas ar message nėra tuščias
+            if not message:
+                logger.warning("Empty message received from ProficyPriceBot")
+                return data
+                
             lines = message.split('\n')
             
+            # Šios funkcijos nekeičiamos
             def convert_volume(volume_str: str) -> float:
                 """Helper function to convert volume with K or M suffix"""
                 try:
@@ -967,7 +958,7 @@ class TokenMonitor:
                         return float(volume_str.replace('K', '')) * 1000
                     return float(volume_str)
                 except (ValueError, TypeError):
-                    return 0  # Grąžina 0 jei konvertavimas nepavyksta
+                    return 0
 
             def format_price_change(price: float) -> str:
                 """Helper function to format price change with K suffix if needed"""
@@ -979,27 +970,50 @@ class TokenMonitor:
                 if 'Price' in line and 'Volume' in line and 'B/S' in line:
                     continue
                     
+                # 3. PAKEISTI: Pridėti parts ilgio patikrinimą
                 if '5M:' in line:
                     parts = line.split()
-                    data['5m'] = {
-                        'price_change': convert_volume(parts[1].replace('%', '')),
-                        'volume': convert_volume(parts[2]),
-                        'bs_ratio': parts[3]
-                    }
+                    if len(parts) >= 4:  # Patikrinam ar užtenka dalių
+                        data['5m'] = {
+                            'price_change': convert_volume(parts[1].replace('%', '')),
+                            'volume': convert_volume(parts[2]),
+                            'bs_ratio': parts[3]
+                        }
+                    else:
+                        logger.warning("Incomplete 5M data in ProficyPriceBot message")
                     
                 if '1H:' in line:
                     parts = line.split()
-                    data['1h'] = {
-                        'price_change': convert_volume(parts[1].replace('%', '')),
-                        'volume': convert_volume(parts[2]),
-                        'bs_ratio': parts[3]
-                    }
+                    if len(parts) >= 4:  # Patikrinam ar užtenka dalių
+                        data['1h'] = {
+                            'price_change': convert_volume(parts[1].replace('%', '')),
+                            'volume': convert_volume(parts[2]),
+                            'bs_ratio': parts[3]
+                        }
+                    else:
+                        logger.warning("Incomplete 1H data in ProficyPriceBot message")
+
+            # 4. PRIDĖTI: Patikrinimas ar gavome bent kokius nors duomenis
+            if data['5m']['price_change'] is None and data['1h']['price_change'] is None:
+                logger.warning("No valid intervals found in ProficyPriceBot message")
                     
             return data
             
         except Exception as e:
+            # 5. PAKEISTI: Grąžinti None reikšmes vietoj 'N/A'
             logger.error(f"Error parsing ProficyPrice message: {e}")
-            return {}
+            return {
+                '5m': {
+                    'price_change': None,
+                    'volume': None,
+                    'bs_ratio': None
+                },
+                '1h': {
+                    'price_change': None,
+                    'volume': None,
+                    'bs_ratio': None
+                }
+            }
 
     
 class MLIntervalAnalyzer:
@@ -1036,10 +1050,44 @@ class MLIntervalAnalyzer:
             # Kiti parametrai iš syrax_scanner_data
             'bundle_count',
             'sniper_activity_tokens',
-            'traders_count'
+            'traders_count',
+            'sniper_activity_percentage',
+            'notable_bundle_supply_percentage',
+            'bundle_supply_percentage'
         ]
+        
+        self.filter_status = {
+                    'dev_created_tokens': False,
+                    'same_name_count': False, 
+                    'same_website_count': False,
+                    'same_telegram_count': False,
+                    'same_twitter_count': False,
+                    'dev_bought_percentage': False,
+                    'dev_bought_curve_percentage': False,
+                    'dev_sold_percentage': False,
+                    'holders_total': True,
+                    'holders_top10_percentage': False,
+                    'holders_top25_percentage': False,
+                    'holders_top50_percentage': False,
+                    'market_cap': True,
+                    'liquidity_usd': False,
+                    'mint_status': True,
+                    'freeze_status': True,
+                    'lp_status': True,
+                    'total_scans': False,
+                    'volume_1h': False,
+                    'price_change_1h': False,
+                    'bs_ratio_1h': False,
+                    'bundle_count': False,
+                    'sniper_activity_tokens': False,
+                    'traders_count': True,
+                    'sniper_activity_percentage': True,
+                    'notable_bundle_supply_percentage': True,
+                    'bundle_supply_percentage': True
+                }
+        
         self.scaler = MinMaxScaler()
-        self.isolation_forest = IsolationForest(contamination=0.4, random_state=42)
+        self.isolation_forest = IsolationForest(contamination='auto', random_state=42)
         self.intervals = {feature: {'min': float('inf'), 'max': float('-inf')} for feature in self.primary_features}
 
         # IQR daugikliai skirtingiems parametrams
@@ -1052,7 +1100,13 @@ class MLIntervalAnalyzer:
             'traders_count': 1.5,        # Vidutinis daugiklis traders
             'bs_ratio_1h': 1.5,          # Mažesnis daugiklis buy/sell ratio
             'liquidity_usd': 1.5,        # Vidutinis daugiklis likvidumui
-            'default': 1.5               # Visiems kitiems
+            # Naujai pridedami parametrai
+            'sniper_activity_percentage': 1.5,      # Vidutinis daugiklis sniper activity
+            'notable_bundle_supply_percentage': 1.5, # Vidutinis daugiklis notable bundle
+            'bundle_supply_percentage': 1.5,        # Vidutinis daugiklis bundle
+    
+                   
+            'default': 2.5               # Visiems kitiems
         }
 
         # Absoliučios ribos parametrams
@@ -1060,16 +1114,20 @@ class MLIntervalAnalyzer:
             'price_change_1h': (-100, 1000),      # nuo -100% iki 1000%
             'market_cap': (100, 1000000),      # nuo 100$ iki 1B$
             'volume_1h': (10, 10000000),          # nuo 10$ iki 10M$
-            'holders_total': (1, 100000),         # nuo 1 iki 100k
-            'liquidity_usd': (10, 10000000),      # nuo 10$ iki 10M$
-            'total_scans': (1, 1000000),          # negali būti 0
-            'traders_count': (1, 100000),         # negali būti 0
+            'holders_total': (100, 100000),         # nuo 1 iki 100k
+            'liquidity_usd': (0, 10000000),      # nuo 10$ iki 10M$
+            'total_scans': (10, 1000000),          # negali būti 0
+            'traders_count': (100, 100000),         # negali būti 0
             'bundle_count': (0, 0),               # visada 0
             'mint_status': (0, 0),                # visada false (0)
             'freeze_status': (0, 0),              # visada false (0)
             'lp_status': (1, 1),                  # visada true (1)
             'sniper_activity_tokens': (0, 0),     # visada 0
-            'bs_ratio_1h': (0.1, 10.0)           # nuo 0.1 iki 10.0
+            'bs_ratio_1h': (0.1, 10.0),           # nuo 0.1 iki 10.0
+            # Naujai pridedami parametrai
+            'sniper_activity_percentage': (0, 16),       # nuo 0% iki 100%
+            'notable_bundle_supply_percentage': (0, 16),  # nuo 0% iki 100%
+            'bundle_supply_percentage': (0, 16)          # nuo 0% iki 100%
         }
 
     def _parse_ratio_value(self, ratio_str) -> float:
@@ -1123,6 +1181,34 @@ class MLIntervalAnalyzer:
                 
         return interval
 
+    def toggle_filter(self, filter_name: str, status: bool = None) -> bool:
+        """
+        Įjungia/išjungia filtrą arba toggle jei status nenurodyta
+        """
+        if filter_name not in self.filter_status:
+            logger.warning(f"Filtras '{filter_name}' nerastas")
+            return False
+            
+        if status is None:
+            self.filter_status[filter_name] = not self.filter_status[filter_name]
+        else:
+            self.filter_status[filter_name] = status
+            
+        logger.info(f"Filtras '{filter_name}' nustatytas į {self.filter_status[filter_name]}")
+        return self.filter_status[filter_name]
+
+    def get_filter_status(self) -> Dict[str, bool]:
+        """Grąžina visų filtrų statusą"""
+        return self.filter_status.copy()
+
+    def get_enabled_filters(self) -> List[str]:
+        """Grąžina įjungtų filtrų sąrašą"""
+        return [k for k, v in self.filter_status.items() if v]
+
+    def get_disabled_filters(self) -> List[str]:
+        """Grąžina išjungtų filtrų sąrašą"""
+        return [k for k, v in self.filter_status.items() if not v]
+
         
         
     def calculate_intervals(self, successful_gems: List[Dict]):
@@ -1130,7 +1216,7 @@ class MLIntervalAnalyzer:
         if not successful_gems or len(successful_gems) < Config.MIN_GEMS_FOR_ANALYSIS:
             logger.warning(f"Nepakanka duomenų ML intervalų nustatymui. Reikia bent {Config.MIN_GEMS_FOR_ANALYSIS} GEM'ų. Dabartinis kiekis: {len(successful_gems)}")
             return False
-            
+                
         # Toliau vykdome tik jei yra pakankamai duomenų
         X = []
         for gem in successful_gems:
@@ -1155,24 +1241,12 @@ class MLIntervalAnalyzer:
         
         # Nustatome intervalus kiekvienam parametrui
         for i, feature in enumerate(self.primary_features):
-            # Pirma patikriname ar yra fixed value absolute limits
-            if feature in self.ABSOLUTE_LIMITS:
-                min_limit, max_limit = self.ABSOLUTE_LIMITS[feature]
-                if min_limit == max_limit:  # Fixed value parametrai
-                    self.intervals[feature] = {
-                        'min': min_limit,
-                        'max': max_limit,
-                        'mean': min_limit,
-                        'std': 0
-                    }
-                    continue  # Skip statistical analysis for fixed values
-            
-            # Statistinė analizė
             values = X[:, i]
             predictions = self.isolation_forest.predict(X_scaled)
             normal_values = values[predictions == 1]
             
             if len(normal_values) > 0:
+                # Statistinė analizė - ML nustato intervalus
                 q1 = np.percentile(normal_values, 25)
                 q3 = np.percentile(normal_values, 75)
                 iqr = q3 - q1
@@ -1182,7 +1256,7 @@ class MLIntervalAnalyzer:
                 # Pasirenkame tinkamą daugiklį
                 multiplier = self.IQR_MULTIPLIERS.get(feature, self.IQR_MULTIPLIERS['default'])
                 
-                # Base interval calculation
+                # ML nustatytas intervalas
                 interval = {
                     'min': q1 - multiplier * iqr,
                     'max': q3 + multiplier * iqr,
@@ -1190,11 +1264,23 @@ class MLIntervalAnalyzer:
                     'std': std_val
                 }
                 
-                # Pritaikome specific rules ir absolute limits
+                # Tik po ML nustatymo, patikriname ar reikia taikyti ABSOLUTE_LIMITS
                 if feature in self.ABSOLUTE_LIMITS:
                     min_limit, max_limit = self.ABSOLUTE_LIMITS[feature]
-                    interval['min'] = max(min_limit, interval['min'])
-                    interval['max'] = min(max_limit, interval['max'])
+                    if min_limit == max_limit:
+                        # Fixed value parametrams vis tiek naudojame absoliučias reikšmes
+                        interval = {
+                            'min': min_limit,
+                            'max': max_limit,
+                            'mean': min_limit,
+                            'std': 0
+                        }
+                    else:
+                        # Kitiems parametrams ABSOLUTE_LIMITS tik kaip saugiklis
+                        if interval['min'] < min_limit:
+                            interval['min'] = min_limit
+                        if interval['max'] > max_limit:
+                            interval['max'] = max_limit
                 
                 self.intervals[feature] = interval
         
@@ -1204,18 +1290,27 @@ class MLIntervalAnalyzer:
     def check_primary_parameters(self, token_data: Dict) -> Dict:
         """Tikrina ar token'o parametrai patenka į ML nustatytus intervalus"""
         results = {}
-        
+
+        # Tik vienas ciklas
         for feature in self.primary_features:
+            # Praleidžiame išjungtus filtrus
+            if not self.filter_status.get(feature, True):
+                continue
+        
             try:
                 # Tiesiogiai imame reikšmę iš parametrų
                 if feature == 'bs_ratio_1h':
-                    value = self._parse_ratio_value(token_data[feature] if token_data[feature] is not None else '1/1')
+                    value = self._parse_ratio_value(token_data.get(feature, '1/1'))
+                elif feature in ['mint_status', 'freeze_status', 'lp_status']:
+                    # Boolean laukams naudojame False kai None
+                    value = bool(token_data.get(feature, False))
                 else:
-                    value = float(token_data[feature] if token_data[feature] is not None else 0)
+                    # Visiems kitiems skaitiniams laukams
+                    value = float(token_data.get(feature, 0))
                     
                     # Svarbi dev_sold_percentage patikra
                     if feature == 'dev_sold_percentage':
-                        dev_bought = float(token_data['dev_bought_percentage'] if token_data['dev_bought_percentage'] is not None else 0)
+                        dev_bought = float(token_data.get('dev_bought_percentage', 0))
                         # Jei dev'as pirko bet dar nepardavė - rizikinga situacija
                         if dev_bought > 0 and value == 0:
                             results[feature] = {
@@ -1241,10 +1336,16 @@ class MLIntervalAnalyzer:
                 'interval': interval
             }
             
-        # Bendras rezultatas
-        all_in_range = all(result['in_range'] for result in results.values())
-        avg_z_score = np.mean([result['z_score'] for result in results.values() if result['z_score'] != float('inf')])
+        # Bendras rezultatas - tikriname TIK įjungtų filtrų rezultatus (PO ciklo)
+        active_results = {k: v for k, v in results.items() if self.filter_status.get(k, True)}
+        all_in_range = all(result['in_range'] for result in active_results.values())
         
+        # Patikriname ar yra ne-inf z_scores
+        finite_z_scores = [result['z_score'] for result in active_results.values() if result['z_score'] != float('inf')]
+        
+        # Jei yra baigtinių z_scores, skaičiuojame jų vidurkį, jei ne - grąžiname inf
+        avg_z_score = np.mean(finite_z_scores) if finite_z_scores else float('inf')
+
         return {
             'passed': all_in_range,
             'avg_z_score': avg_z_score,
@@ -1256,7 +1357,7 @@ class MLGEMAnalyzer:
         """Inicializuoja ML GEM analizatorių"""
         self.interval_analyzer = MLIntervalAnalyzer()
         self.scaler = MinMaxScaler()
-        self.isolation_forest = IsolationForest(contamination=0.4, random_state=42)
+        self.isolation_forest = IsolationForest(contamination='auto', random_state=42)
         self.db = DatabaseManager()
         
         # Apibrėžiame pagrindinius parametrus analizei
