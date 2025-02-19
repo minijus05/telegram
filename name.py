@@ -1632,38 +1632,47 @@ class MLGEMAnalyzer:
 
             # Konvertuojame į dictionary
             db_data = dict(row)
-            
+
             # Debug - spausdiname gautus duomenis
             print("\nToken Data from Database:")
             print(json.dumps(db_data, indent=2))
 
             try:
-                # Suformuojame primary check duomenis
+                # Pridedame safe_float pagalbinę funkciją čia
+                def safe_float(value, default=0.0):
+                    if value is None:
+                        return default
+                    try:
+                        return float(value)
+                    except (ValueError, TypeError):
+                        return default
+
+                # Suformuojame primary check duomenis naudodami safe_float
                 primary_data = {
-                    'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
-                    'same_name_count': float(db_data.get('same_name_count', 0)),
-                    'same_website_count': float(db_data.get('same_website_count', 0)),
-                    'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
-                    'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
-                    'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
-                    'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
-                    'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0)),
-                    'holders_total': float(db_data.get('holders_total', 0)),
-                    'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
-                    'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
-                    'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
-                    'market_cap': float(db_data.get('market_cap', 0)),
-                    'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
-                    'volume_1h': float(db_data.get('volume_1h', 0)),
-                    'price_change_1h': float(db_data.get('price_change_1h', 0)),
+                    'dev_created_tokens': safe_float(db_data.get('dev_created_tokens')),
+                    'same_name_count': safe_float(db_data.get('same_name_count')),
+                    'same_website_count': safe_float(db_data.get('same_website_count')),
+                    'same_telegram_count': safe_float(db_data.get('same_telegram_count')),
+                    'same_twitter_count': safe_float(db_data.get('same_twitter_count')),
+                    'dev_bought_percentage': safe_float(db_data.get('dev_bought_percentage')),
+                    'dev_bought_curve_percentage': safe_float(db_data.get('dev_bought_curve_percentage')),
+                    'dev_sold_percentage': safe_float(db_data.get('dev_sold_percentage')),
+                    'holders_total': safe_float(db_data.get('holders_total')),
+                    'holders_top10_percentage': safe_float(db_data.get('holders_top10_percentage')),
+                    'holders_top25_percentage': safe_float(db_data.get('holders_top25_percentage')),
+                    'holders_top50_percentage': safe_float(db_data.get('holders_top50_percentage')),
+                    'market_cap': safe_float(db_data.get('market_cap')),
+                    'liquidity_usd': safe_float(db_data.get('liquidity_usd')),
+                    'volume_1h': safe_float(db_data.get('volume_1h')),
+                    'price_change_1h': safe_float(db_data.get('price_change_1h')),
                     'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1')),
-                    'mint_status': float(db_data.get('mint_status', 0)),
-                    'freeze_status': float(db_data.get('freeze_status', 0)),
-                    'lp_status': float(db_data.get('lp_status', 0)),
-                    'total_scans': float(db_data.get('total_scans', 0)),
-                    'bundle_count': float(db_data.get('bundle_count', 0)),
-                    'sniper_activity_tokens': float(db_data.get('sniper_activity_tokens', 0)),
-                    'traders_count': float(db_data.get('traders_count', 0))
+                    'mint_status': bool(db_data.get('mint_status', False)),  # Pakeista į bool
+                    'freeze_status': bool(db_data.get('freeze_status', False)),  # Pakeista į bool
+                    'lp_status': bool(db_data.get('lp_status', False)),  # Pakeista į bool
+                    'total_scans': safe_float(db_data.get('total_scans')),
+                    'bundle_count': safe_float(db_data.get('bundle_count')),
+                    'sniper_activity_tokens': safe_float(db_data.get('sniper_activity_tokens')),
+                    'traders_count': safe_float(db_data.get('traders_count'))
                 }
 
                 # Pirminė parametrų patikra
@@ -1683,7 +1692,6 @@ class MLGEMAnalyzer:
                         'details': primary_check['details'],
                         'message': 'Token nepraėjo pirminės filtracijos'
                     }
-
                 # ML analizei ruošiame features pagal scannerius
                 try:
                     features = []
