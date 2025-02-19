@@ -133,7 +133,7 @@ class TokenMonitor:
             
             if token_addresses:
                 for address in token_addresses:
-                    is_new_token = "New" in message.lower() or "Marketcap" or "migration" in message
+                    is_new_token = "new" in message.lower() or "migration" in message
                     is_from_token = "from" in message.lower() or "MADE" in message or "🔝" in message
                     
                     # Patikriname ar token'as jau yra DB
@@ -485,12 +485,11 @@ class TokenMonitor:
         """Ištraukia token adresus iš žinutės"""
         try:
             # Pirmiausiai ieškome tiesiogiai pateikto CA (Contract Address)
-            ca_match = re.search(r'(?:📃\s*CA:|CA:|🔸\s*Contract Address:\s*)([A-Za-z0-9]{32,44})|(?:\[Token Details\].*?🔸\s*Contract Address:\s*)([A-Za-z0-9]{32,44})', message, re.MULTILINE | re.IGNORECASE | re.DOTALL)
-            if ca_match:
-                addr = ca_match.group(1) if ca_match.group(1) else ca_match.group(2)
-                if 32 <= len(addr) <= 44:
-                    logger.info(f"Found token address from CA: {addr}")
-                    return [addr]
+            ca_match = re.search(r'(?:📃\s*CA:|CA:|solscan\.io/token/)([A-Za-z0-9]{32,44})', message, re.MULTILINE)
+            if ca_match and 32 <= len(ca_match.group(1)) <= 44:
+                addr = ca_match.group(1)
+                logger.info(f"Found token address from CA: {addr}")
+                return [addr]
             
             # Jei CA nerastas, ieškome per URL patterns prioriteto tvarka
             patterns = [
@@ -1291,33 +1290,22 @@ class MLIntervalAnalyzer:
         """Tikrina ar token'o parametrai patenka į ML nustatytus intervalus"""
         results = {}
 
-        # Tik vienas ciklas
         for feature in self.primary_features:
-            # Praleidžiame išjungtus filtrus ir features kurių nėra filter_status
-            if not self.filter_status.get(feature, False):
-                # Įrašome default reikšmes į results, bet netikriname jų
-                results[feature] = {
-                    'value': 0,
-                    'in_range': True,  # Defaultinės reikšmės visada "in range"
-                    'z_score': 0,
-                    'interval': self.intervals[feature]
-                }
+            # PRIDĖTI ŠIĄ PATIKRĄ:
+            if not self.filter_status.get(feature, True):
                 continue
         
+        for feature in self.primary_features:
             try:
                 # Tiesiogiai imame reikšmę iš parametrų
                 if feature == 'bs_ratio_1h':
-                    value = self._parse_ratio_value(token_data.get(feature, '1/1'))
-                elif feature in ['mint_status', 'freeze_status', 'lp_status']:
-                    # Boolean laukams naudojame False kai None
-                    value = bool(token_data.get(feature, False))
+                    value = self._parse_ratio_value(token_data[feature] if token_data[feature] is not None else '1/1')
                 else:
-                    # Visiems kitiems skaitiniams laukams
-                    value = float(token_data.get(feature, 0))
+                    value = float(token_data[feature] if token_data[feature] is not None else 0)
                     
                     # Svarbi dev_sold_percentage patikra
                     if feature == 'dev_sold_percentage':
-                        dev_bought = float(token_data.get('dev_bought_percentage', 0))
+                        dev_bought = float(token_data['dev_bought_percentage'] if token_data['dev_bought_percentage'] is not None else 0)
                         # Jei dev'as pirko bet dar nepardavė - rizikinga situacija
                         if dev_bought > 0 and value == 0:
                             results[feature] = {
@@ -1343,16 +1331,10 @@ class MLIntervalAnalyzer:
                 'interval': interval
             }
             
-        # Bendras rezultatas - tikriname TIK įjungtų filtrų rezultatus (PO ciklo)
-        active_results = {k: v for k, v in results.items() if self.filter_status.get(k, True)}
-        all_in_range = all(result['in_range'] for result in active_results.values())
+        # Bendras rezultatas
+        all_in_range = all(result['in_range'] for result in results.values())
+        avg_z_score = np.mean([result['z_score'] for result in results.values() if result['z_score'] != float('inf')])
         
-        # Patikriname ar yra ne-inf z_scores
-        finite_z_scores = [result['z_score'] for result in active_results.values() if result['z_score'] != float('inf')]
-        
-        # Jei yra baigtinių z_scores, skaičiuojame jų vidurkį, jei ne - grąžiname inf
-        avg_z_score = np.mean(finite_z_scores) if finite_z_scores else float('inf')
-
         return {
             'passed': all_in_range,
             'avg_z_score': avg_z_score,
@@ -1632,47 +1614,38 @@ class MLGEMAnalyzer:
 
             # Konvertuojame į dictionary
             db_data = dict(row)
-
+            
             # Debug - spausdiname gautus duomenis
             print("\nToken Data from Database:")
             print(json.dumps(db_data, indent=2))
 
             try:
-                # Pridedame safe_float pagalbinę funkciją čia
-                def safe_float(value, default=0.0):
-                    if value is None:
-                        return default
-                    try:
-                        return float(value)
-                    except (ValueError, TypeError):
-                        return default
-
-                # Suformuojame primary check duomenis naudodami safe_float
+                # Suformuojame primary check duomenis
                 primary_data = {
-                    'dev_created_tokens': safe_float(db_data.get('dev_created_tokens')),
-                    'same_name_count': safe_float(db_data.get('same_name_count')),
-                    'same_website_count': safe_float(db_data.get('same_website_count')),
-                    'same_telegram_count': safe_float(db_data.get('same_telegram_count')),
-                    'same_twitter_count': safe_float(db_data.get('same_twitter_count')),
-                    'dev_bought_percentage': safe_float(db_data.get('dev_bought_percentage')),
-                    'dev_bought_curve_percentage': safe_float(db_data.get('dev_bought_curve_percentage')),
-                    'dev_sold_percentage': safe_float(db_data.get('dev_sold_percentage')),
-                    'holders_total': safe_float(db_data.get('holders_total')),
-                    'holders_top10_percentage': safe_float(db_data.get('holders_top10_percentage')),
-                    'holders_top25_percentage': safe_float(db_data.get('holders_top25_percentage')),
-                    'holders_top50_percentage': safe_float(db_data.get('holders_top50_percentage')),
-                    'market_cap': safe_float(db_data.get('market_cap')),
-                    'liquidity_usd': safe_float(db_data.get('liquidity_usd')),
-                    'volume_1h': safe_float(db_data.get('volume_1h')),
-                    'price_change_1h': safe_float(db_data.get('price_change_1h')),
+                    'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
+                    'same_name_count': float(db_data.get('same_name_count', 0)),
+                    'same_website_count': float(db_data.get('same_website_count', 0)),
+                    'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
+                    'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
+                    'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
+                    'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
+                    'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0)),
+                    'holders_total': float(db_data.get('holders_total', 0)),
+                    'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
+                    'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
+                    'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
+                    'market_cap': float(db_data.get('market_cap', 0)),
+                    'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
+                    'volume_1h': float(db_data.get('volume_1h', 0)),
+                    'price_change_1h': float(db_data.get('price_change_1h', 0)),
                     'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1')),
-                    'mint_status': bool(db_data.get('mint_status', False)),  # Pakeista į bool
-                    'freeze_status': bool(db_data.get('freeze_status', False)),  # Pakeista į bool
-                    'lp_status': bool(db_data.get('lp_status', False)),  # Pakeista į bool
-                    'total_scans': safe_float(db_data.get('total_scans')),
-                    'bundle_count': safe_float(db_data.get('bundle_count')),
-                    'sniper_activity_tokens': safe_float(db_data.get('sniper_activity_tokens')),
-                    'traders_count': safe_float(db_data.get('traders_count'))
+                    'mint_status': float(db_data.get('mint_status', 0)),
+                    'freeze_status': float(db_data.get('freeze_status', 0)),
+                    'lp_status': float(db_data.get('lp_status', 0)),
+                    'total_scans': float(db_data.get('total_scans', 0)),
+                    'bundle_count': float(db_data.get('bundle_count', 0)),
+                    'sniper_activity_tokens': float(db_data.get('sniper_activity_tokens', 0)),
+                    'traders_count': float(db_data.get('traders_count', 0))
                 }
 
                 # Pirminė parametrų patikra
@@ -1692,6 +1665,7 @@ class MLGEMAnalyzer:
                         'details': primary_check['details'],
                         'message': 'Token nepraėjo pirminės filtracijos'
                     }
+
                 # ML analizei ruošiame features pagal scannerius
                 try:
                     features = []
