@@ -1071,9 +1071,9 @@ class MLIntervalAnalyzer:
                     'holders_top50_percentage': False,
                     'market_cap': True,
                     'liquidity_usd': False,
-                    'mint_status': True,
-                    'freeze_status': True,
-                    'lp_status': True,
+                    'mint_status': False,
+                    'freeze_status': False,
+                    'lp_status': False,
                     'total_scans': False,
                     'volume_1h': False,
                     'price_change_1h': False,
@@ -1293,8 +1293,15 @@ class MLIntervalAnalyzer:
 
         # Tik vienas ciklas
         for feature in self.primary_features:
-            # Praleidžiame išjungtus filtrus
-            if not self.filter_status.get(feature, True):
+            # Praleidžiame išjungtus filtrus ir features kurių nėra filter_status
+            if not self.filter_status.get(feature, False):
+                # Įrašome default reikšmes į results, bet netikriname jų
+                results[feature] = {
+                    'value': 0,
+                    'in_range': True,  # Defaultinės reikšmės visada "in range"
+                    'z_score': 0,
+                    'interval': self.intervals[feature]
+                }
                 continue
         
             try:
