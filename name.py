@@ -290,43 +290,39 @@ class TokenMonitor:
             "proficy": None,
             "solsniff": None 
         }
-
-            
-        
-
+                
         while time.time() - start_time < timeout:
-            if time.time() - last_check_time >= 2 :
+            if time.time() - last_check_time >= 2:
                 last_check_time = time.time()
 
-                if not scanner_data["solsniff"]:  # Jei dar neturim solsniff duomenų
-                    elapsed = int(time.time() - start_time)
-                    print(f"\n=== Checking SolSnifferBot Messages (Elapsed: {elapsed}s) ===")
-                    print(f"Looking for response for address: {address.lower()}")
+               # Tikriname @solsnifferbot žinutes su bandymais
+            if not scanner_data["solsniff"]:
+                max_attempts = 8  # Maksimalus bandymų skaičius
+                attempt = 0
+                
+                while attempt < max_attempts:
+                    attempt += 1
+                    print(f"\nChecking SolSnifferBot (Attempt {attempt}/{max_attempts})")
                     
                     async for message in self.scanner_client.iter_messages(
                         '@solsnifferbot',
-                        limit=10
+                        limit=1  # Tik naujausia žinutė
                     ):
-                        print("\n--- Message from @solsnifferbot ---")
-                        print(f"Raw message:\n{message.text}")
+                        if "Creator" in message.text:
+                            match = re.search(r'\*\*🌊\s*Snifscore:\*\*\s*(\d+)', message.text)
+                            if match:
+                                score = int(match.group(1))
+                                scanner_data["solsniff"] = {"snifscore": score}
+                                print(f"[SUCCESS] Got Snifscore: {score}")
+                                break
+                    
+                    if scanner_data["solsniff"]:  # Jei radome score - išeiname
+                        break
                         
-                        # Skip jei tai /scan žinutė
-                        if message.text.strip().startswith("/scan"):
-                            print("Skipping scan request")
-                            continue
-                        
-                        # Check if we found Snifscore
-                        match = re.search(r'\*\*🌊\s*Snifscore:\*\*\s*(\d+)', message.text)
-                        if match:
-                            score = int(match.group(1))
-                            print(f"Found Snifscore: {score} for our token {address}")
-                            scanner_data["solsniff"] = {"snifscore": score}  # ČIA įrašom score
-                            print(f"[DEBUG] Updated scanner_data with snifscore: {scanner_data['solsniff']}")  # Debug
-                            break
-                        else:
-                            print(f"[WARNING] Found our token but no Snifscore in message!")
-                        
-                # Patikriname @sakneris atsakymą
+                    print(f"No Snifscore found, waiting 3s...")
+                    await asyncio.sleep(4)  # Laukiame 3s prieš kitą bandymą
+        
+                # Tikriname @skaneriss atsakymus
                 async for message in self.scanner_client.iter_messages(
                     '@skaneriss',
                     limit=5
@@ -337,48 +333,21 @@ class TokenMonitor:
                         scanner_data["syrax"] = self.parse_syrax_scanner_response(message.text)
                     elif message.sender_id == Config.PROFICY_PRICE_BOT:
                         scanner_data["proficy"] = await self.parse_proficy_price(message.text)
-                    
 
-                    # Pakeičiame sąlygą - tęsiame jei turime bent Soul ir Syrax duomenis
-                    # Pakeičiame sąlygą - tęsiame jei turime bent Soul ir Syrax duomenis
-                    if scanner_data["soul"] and scanner_data["syrax"]:
-                        # Jei jau turim solsniff - grąžinam viską
-                        if scanner_data["solsniff"]:
-                            return scanner_data
-                        # Jei dar nepraėjo 10s - tęsiam laukti solsniff
-                        elif elapsed < 30:
-                            print(f"Got soul+syrax, waiting for solsniff... ({elapsed}s)")
-                            if not scanner_data["proficy"]:
-                                scanner_data["proficy"] = {
-                                    "price_change_5m": "0",
-                                    "volume_5m": "0",
-                                    "bs_ratio_5m": "1/1",
-                                    "price_change_1h": "0",
-                                    "volume_1h": "0",
-                                    "bs_ratio_1h": "1/1"
-                                }
-                            continue
-                        # Jei praėjo 10s - grąžinam be solsniff
-                        else:
-                            print("Timeout waiting for solsniff")
-                            return scanner_data
+                # Grąžiname duomenis kai turime Soul ir Syrax
+                if scanner_data["soul"] and scanner_data["syrax"]:
+                    if not scanner_data["proficy"]:
+                        scanner_data["proficy"] = {
+                            "price_change_5m": "0",
+                            "volume_5m": "0",
+                            "bs_ratio_5m": "1/1",
+                            "price_change_1h": "0",
+                            "volume_1h": "0",
+                            "bs_ratio_1h": "1/1"
+                        }
+                    return scanner_data
 
             await asyncio.sleep(2)
-        
-        # Jei praėjo timeout
-        print(f"Timeout after {elapsed}s")
-        if scanner_data["soul"] and scanner_data["syrax"]:
-            if not scanner_data["proficy"]:
-                scanner_data["proficy"] = {
-                    "price_change_5m": "0",
-                    "volume_5m": "0",
-                    "bs_ratio_5m": "1/1",
-                    "price_change_1h": "0",
-                    "volume_1h": "0",
-                    "bs_ratio_1h": "1/1"
-                }
-            print("Returning without SolSniff data")
-            return scanner_data
         
         print("Failed to get required data")
         return None
@@ -1210,19 +1179,24 @@ class MLIntervalAnalyzer:
         ]
         
         self.filter_status = {
-                    'dev_created_tokens': True,
-                    'same_name_count': True, 
-                    'same_website_count': True,
-                    'same_telegram_count': True,
-                    'same_twitter_count': True,
+                    'dev_created_tokens': False,
+                    'same_name_count': False, 
+                    'same_website_count': False,
+                    'same_telegram_count': False,
+                    'same_twitter_count': False,
+                    
                     'dev_bought_percentage': False,
                     'dev_bought_curve_percentage': False,
                     'dev_sold_percentage': False,
-                    'holders_total': True,
-                    'holders_top10_percentage': True,
+                    
+                    'holders_total': False,
+                    'holders_top10_percentage': False,
+                    
                     'holders_top25_percentage': False,
                     'holders_top50_percentage': False,
-                    'market_cap': True,
+                    
+                    'market_cap': False,
+                    
                     'liquidity_usd': False,
                     'mint_status': False,
                     'freeze_status': False,
@@ -1233,11 +1207,12 @@ class MLIntervalAnalyzer:
                     'bs_ratio_1h': False,
                     'bundle_count': False,
                     'sniper_activity_tokens': False,
-                    'traders_count': True,
-                    'sniper_activity_percentage': True,
-                    'notable_bundle_supply_percentage': True,
-                    'bundle_supply_percentage': True,
-                    'snifscore': False,
+                    
+                    'traders_count': False,
+                    'sniper_activity_percentage': False,
+                    'notable_bundle_supply_percentage': False,
+                    'bundle_supply_percentage': False,
+                    'snifscore': True,
                 }
         
         self.scaler = MinMaxScaler()
@@ -1284,7 +1259,7 @@ class MLIntervalAnalyzer:
             'bundle_supply_percentage': (0, 16),          # nuo 0% iki 100%
             'dev_sold_percentage': (50, 100),        # Tokios pat ribos kaip ir kitiems procentiniams parametrams
             'dev_bought_percentage': (0, 10),
-            'snifscore': (80, 100)
+            'snifscore': (0, 100)
         }
 
     def _parse_ratio_value(self, ratio_str) -> float:
@@ -1385,7 +1360,7 @@ class MLIntervalAnalyzer:
                         'mean': min_limit,
                         'std': 0
                     }
-                elif feature in ['sniper_activity_percentage', 'notable_bundle_supply_percentage', 'bundle_supply_percentage']:
+                elif feature in ['sniper_activity_percentage', 'notable_bundle_supply_percentage', 'bundle_supply_percentage', 'snifscore']:
                     self.intervals[feature] = {
                         'min': min_limit,
                         'max': max_limit,
@@ -1712,6 +1687,7 @@ class MLGEMAnalyzer:
                 SELECT 
                     -- Soul Scanner duomenys
                     s.name,
+                    
                     s.symbol,
                     s.market_cap,
                     s.ath_market_cap,
@@ -1766,11 +1742,16 @@ class MLGEMAnalyzer:
                     p.bs_ratio_5m,
                     p.price_change_1h,
                     p.volume_1h,
-                    p.bs_ratio_1h
+                    p.bs_ratio_1h,
+
+                    -- SolSniffer duomenys
+                    ss.snifscore
+        
                 FROM tokens t
-                JOIN soul_scanner_data s ON t.address = s.token_address
-                JOIN syrax_scanner_data sy ON t.address = sy.token_address
-                JOIN proficy_price_data p ON t.address = p.token_address
+                LEFT JOIN soul_scanner_data s ON t.address = s.token_address
+                LEFT JOIN syrax_scanner_data sy ON t.address = sy.token_address
+                LEFT JOIN proficy_price_data p ON t.address = p.token_address
+                LEFT JOIN solsniff_scanner_data ss ON t.address = ss.token_address
                 WHERE t.address = ?
                 ORDER BY s.scan_time DESC, sy.scan_time DESC, p.scan_time DESC
                 LIMIT 1
@@ -2376,7 +2357,8 @@ class DatabaseManager:
                         try:
                             print(f"[DEBUG] Attempting to insert SolSniffer Scanner data for {address}")
                             snifscore = solsniff_data['snifscore'] if isinstance(solsniff_data, dict) else solsniff_data
-                            print(f"[DEBUG] Snifscore value to insert: {snifscore}")  # Debug log
+                            
+                            # Pirma įdedame į solsniff_scanner_data
                             self.cursor.execute('''
                                 INSERT INTO solsniff_scanner_data (
                                     token_address,
@@ -2387,6 +2369,14 @@ class DatabaseManager:
                                 address,
                                 snifscore
                             ))
+                            
+                            # NAUJAS: Atnaujiname tokens lentelę
+                            self.cursor.execute('''
+                                UPDATE tokens 
+                                SET snifscore = ?
+                                WHERE address = ?
+                            ''', (snifscore, address))
+                            
                             print(f"[DEBUG] Successfully inserted snifscore")
                         except Exception as e:
                             print(f"[ERROR] Failed to insert SolSniffer data: {e}")
@@ -2690,7 +2680,19 @@ class DatabaseManager:
 
                                 
                 # LOGGER 8: Galutinis patikrinimas
+                # Senoji eilutė:
                 self.cursor.execute("SELECT * FROM tokens WHERE address = ?", (address,))
+
+                # Pakeisti į:
+                self.cursor.execute('''
+                    SELECT t.*, ss.snifscore
+                    FROM tokens t
+                    LEFT JOIN solsniff_scanner_data ss ON t.address = ss.token_address 
+                    WHERE t.address = ?
+                    ORDER BY ss.scan_time DESC
+                    LIMIT 1
+                ''', (address,))
+
                 final_check = self.cursor.fetchone()
                 print(f"[DEBUG] Final check - token in database: {bool(final_check)}")
                 
@@ -3064,7 +3066,7 @@ class DatabaseManager:
                     LEFT JOIN syrax_scanner_data sy ON t.address = sy.token_address
                     LEFT JOIN proficy_price_data p ON t.address = p.token_address
                     LEFT JOIN solsniff_scanner_data ss ON t.address = ss.token_address
-                    LEFT JOIN solsniff_scanner_data ss ON t.address = ss.token_address
+                    
                 )
                 SELECT * FROM LatestData WHERE rn = 1
                 ORDER BY first_seen DESC
