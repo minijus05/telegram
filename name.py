@@ -148,14 +148,9 @@ class TokenMonitor:
                             continue
                             
                         print(f"\n[NEW TOKEN DETECTED] Address: {address}")
-                        # Siunčiame į scanner grupę
-                        original_message = await self.scanner_client.send_message(
-                            Config.SCANNER_GROUP,
-                            address
-                        )
-                        logger.info(f"Sent NEW token to scanner group: {address}")
+                        
 
-                        # Siunčiame į @solsnifferbot su /scan prefiksu
+                        # Siunčiame tik į @solsnifferbot su /scan prefiksu
                         try:
                             await self.scanner_client.send_message(
                                 '@solsnifferbot',
@@ -165,8 +160,8 @@ class TokenMonitor:
                         except Exception as e:
                             logger.error(f"Failed to send message to solsnifferbot: {e}")
                         
-                        # Renkame scannerių duomenis
-                        scanner_data = await self._collect_scanner_data(address, original_message)
+                        # Renkame scannerių duomenis - perduodame None vietoj original_message
+                        scanner_data = await self._collect_scanner_data(address, None)
                         
                         if scanner_data:
                             # Išsaugome token duomenis į DB
@@ -175,6 +170,7 @@ class TokenMonitor:
                                 scanner_data['soul'],
                                 scanner_data['syrax'],
                                 scanner_data['proficy'],
+                                scanner_data.get('solsniff', {}),  # Pridedame solsniff_data
                                 is_new_token=True
                             )
                             print(f"[SUCCESS] Saved NEW token data: {address}")
@@ -292,19 +288,27 @@ class TokenMonitor:
             if time.time() - last_check_time >= 1:
                 last_check_time = time.time()
 
-                async for message in self.scanner_client.iter_messages(
-                    Config.SCANNER_GROUP,
-                    limit=10,
-                    min_id=original_message.id
-                ):
+                # Patikriname @solsnifferbot atsakymą
+            async for message in self.scanner_client.iter_messages(
+                '@solsnifferbot',
+                limit=5
+            ):
+                if address.lower() in message.text.lower():
+                    scanner_data["snifscore"] = self.parse_solsniff_scanner_response(message.text)
+                    break
+
+            # Patikriname @sakneris atsakymą
+            async for message in self.scanner_client.iter_messages(
+                '@skaneriss',
+                limit=5
+            ):
                     if message.sender_id == Config.SOUL_SCANNER_BOT:
                         scanner_data["soul"] = self.parse_soul_scanner_response(message.text)
                     elif message.sender_id == Config.SYRAX_SCANNER_BOT:
                         scanner_data["syrax"] = self.parse_syrax_scanner_response(message.text)
                     elif message.sender_id == Config.PROFICY_PRICE_BOT:
                         scanner_data["proficy"] = await self.parse_proficy_price(message.text)
-                    elif message.sender_id == Config.SOLSNIFF_BOT_ID:  # Using Config constant
-                        scanner_data["snifscore"] = self.parse_solsniff_scanner_response(message.text)
+                    
 
                     # Pakeičiame sąlygą - tęsiame jei turime bent Soul ir Syrax duomenis
                     if scanner_data["soul"] and scanner_data["syrax"]:
@@ -1212,7 +1216,7 @@ class MLIntervalAnalyzer:
                     'sniper_activity_percentage': True,
                     'notable_bundle_supply_percentage': True,
                     'bundle_supply_percentage': True,
-                    'snifscore': True,
+                    'snifscore': False,
                 }
         
         self.scaler = MinMaxScaler()
