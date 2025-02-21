@@ -152,16 +152,23 @@ class TokenMonitor:
 
                         # Siunčiame tik į @solsnifferbot su /scan prefiksu
                         try:
-                            await self.scanner_client.send_message(
+                            original_message = await self.scanner_client.send_message(  # Išsaugome žinutę
                                 '@solsnifferbot',
                                 f'/scan {address}'
                             )
                             logger.info(f"Sent scan request to solsnifferbot: {address}")
+                            
+                            # Siunčiame į @sakneris
+                            await self.scanner_client.send_message(
+                                '@skaneriss',
+                                address
+                            )
+                            logger.info(f"Sent scan request to sakneris: {address}")
                         except Exception as e:
-                            logger.error(f"Failed to send message to solsnifferbot: {e}")
+                            logger.error(f"Failed to send message to scanners: {e}")
                         
-                        # Renkame scannerių duomenis - perduodame None vietoj original_message
-                        scanner_data = await self._collect_scanner_data(address, None)
+                        # Renkame scannerių duomenis - perduodame original_message vietoj None
+                        scanner_data = await self._collect_scanner_data(address, original_message)
                         
                         if scanner_data:
                             # Išsaugome token duomenis į DB
@@ -170,7 +177,7 @@ class TokenMonitor:
                                 scanner_data['soul'],
                                 scanner_data['syrax'],
                                 scanner_data['proficy'],
-                                scanner_data.get('solsniff', {}),  # Pridedame solsniff_data
+                                scanner_data["solsniff"],   # Pridedame solsniff_data
                                 is_new_token=True
                             )
                             print(f"[SUCCESS] Saved NEW token data: {address}")
@@ -281,21 +288,20 @@ class TokenMonitor:
             "soul": None,
             "syrax": None,
             "proficy": None,
-            "snifscore": None
+            "solsniff": None 
         }
 
         while time.time() - start_time < timeout:
             if time.time() - last_check_time >= 1:
                 last_check_time = time.time()
 
-                # Patikriname @solsnifferbot atsakymą
-            async for message in self.scanner_client.iter_messages(
-                '@solsnifferbot',
-                limit=5
-            ):
-                if address.lower() in message.text.lower():
-                    scanner_data["snifscore"] = self.parse_solsniff_scanner_response(message.text)
-                    break
+                async for message in self.scanner_client.iter_messages(
+                    '@solsnifferbot',
+                    limit=5
+                ):
+                    if message.id > original_message.id and address.lower() in message.text.lower():
+                        scanner_data["solsniff"] = self.parse_solsniff_scanner_response(message.text)
+                        break
 
             # Patikriname @sakneris atsakymą
             async for message in self.scanner_client.iter_messages(
@@ -770,21 +776,26 @@ class TokenMonitor:
             lines = text.split('\n')
             
             for line in lines:
-                if not line.strip():
-                    continue
+                try:
+                    if not line.strip():
+                        continue
+                        
+                    clean_line = self.clean_line(line)
                     
-                clean_line = self.clean_line(line)
-                
-                # Snifscore extraction
-                if '🌊' in line and 'Snifscore:' in line:
-                    if match := re.search(r'Snifscore:\s*(\d+)', clean_line):
-                        data['snifscore'] = int(match.group(1))
+                    # Snifscore extraction
+                    if '🌊' in line and 'Snifscore:' in line:
+                        if match := re.search(r'Snifscore:\s*(\d+)', clean_line):
+                            data['snifscore'] = int(match.group(1))
+                            
+                except Exception as e:
+                    logger.warning(f"Error parsing line: {str(e)}")
+                    continue
                         
             return data
-            
+                
         except Exception as e:
-            logger.error(f"Error parsing SolSniffer response: {e}")
-            return None    
+            logger.error(f"Error parsing message: {str(e)}")
+            return {}
 
     def parse_syrax_scanner_response(self, text: str) -> Dict:
         """Parse Syrax Scanner message"""
