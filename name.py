@@ -29,7 +29,7 @@ class Config:
     # Telegram settings
     TELEGRAM_API_ID = '25425140'
     TELEGRAM_API_HASH = 'bd0054bc5393af360bc3930a27403c33'
-    TELEGRAM_SOURCE_CHATS = ['@PumpFunRaydium', '@botubotass', '@solearlytrending'] #'@solearlytrending', '@HighVolumeBordga', '@solanahypee'
+    TELEGRAM_SOURCE_CHATS = ['@botubotass', '@solearlytrending'] #'@solearlytrending', '@HighVolumeBordga', '@solanahypee'
     
     TELEGRAM_GEM_CHAT = '@testasmano'
     
@@ -38,6 +38,7 @@ class Config:
     SOUL_SCANNER_BOT = 6872314605
     SYRAX_SCANNER_BOT = 7488438206
     PROFICY_PRICE_BOT = 5457577145
+    SOLSNIFF_BOT_ID = 7045216161
 
     USER_LOGIN = 'minijus05'
 
@@ -133,7 +134,7 @@ class TokenMonitor:
             
             if token_addresses:
                 for address in token_addresses:
-                    is_new_token = "ddnew" in message.lower() or "migration" in message
+                    is_new_token = "new" in message.lower() or "migration" in message or "next" in message
                     is_from_token = "from" in message.lower() or "MADE" in message or "🔝" in message
                     
                     # Patikriname ar token'as jau yra DB
@@ -153,6 +154,16 @@ class TokenMonitor:
                             address
                         )
                         logger.info(f"Sent NEW token to scanner group: {address}")
+
+                        # Siunčiame į @solsnifferbot su /scan prefiksu
+                        try:
+                            await self.scanner_client.send_message(
+                                '@solsnifferbot',
+                                f'/scan {address}'
+                            )
+                            logger.info(f"Sent scan request to solsnifferbot: {address}")
+                        except Exception as e:
+                            logger.error(f"Failed to send message to solsnifferbot: {e}")
                         
                         # Renkame scannerių duomenis
                         scanner_data = await self._collect_scanner_data(address, original_message)
@@ -273,7 +284,8 @@ class TokenMonitor:
         scanner_data = {
             "soul": None,
             "syrax": None,
-            "proficy": None
+            "proficy": None,
+            "snifscore": None
         }
 
         while time.time() - start_time < timeout:
@@ -291,11 +303,37 @@ class TokenMonitor:
                         scanner_data["syrax"] = self.parse_syrax_scanner_response(message.text)
                     elif message.sender_id == Config.PROFICY_PRICE_BOT:
                         scanner_data["proficy"] = await self.parse_proficy_price(message.text)
+                    elif message.sender_id == Config.SOLSNIFF_BOT_ID:  # Using Config constant
+                        scanner_data["snifscore"] = self.parse_solsniff_scanner_response(message.text)
 
-                    if all(scanner_data.values()):
+                    # Pakeičiame sąlygą - tęsiame jei turime bent Soul ir Syrax duomenis
+                    if scanner_data["soul"] and scanner_data["syrax"]:
+                        # Jei neturime Proficy duomenų, sukuriame default reikšmes
+                        if not scanner_data["proficy"]:
+                            scanner_data["proficy"] = {
+                                "price_change_5m": "0",
+                                "volume_5m": "0",
+                                "bs_ratio_5m": "1/1",
+                                "price_change_1h": "0",
+                                "volume_1h": "0",
+                                "bs_ratio_1h": "1/1"
+                            }
                         return scanner_data
 
             await asyncio.sleep(1)
+        
+        # Jei turime bent Soul ir Syrax duomenis po timeout, grąžiname juos
+        if scanner_data["soul"] and scanner_data["syrax"]:
+            if not scanner_data["proficy"]:
+                scanner_data["proficy"] = {
+                    "price_change_5m": "0",
+                    "volume_5m": "0",
+                    "bs_ratio_5m": "1/1",
+                    "price_change_1h": "0",
+                    "volume_1h": "0",
+                    "bs_ratio_1h": "1/1"
+                }
+            return scanner_data
         
         return None
 
@@ -349,21 +387,38 @@ class TokenMonitor:
             print(f"Market Cap: ${soul_data.get('market_cap', 0):,.2f}")
             print(f"Liquidity USD: ${soul_data.get('liquidity_usd', 0):,.2f}")
 
-            # Proficy Parametrai - nested structure
-            proficy_data = scanner_data.get('proficy', {})
-            hour_data = proficy_data.get('1h', {})
+            # Proficy Parametrai
             print("\nProficy Parameters:")
-            print(f"1h Volume: ${hour_data.get('volume', 0):,.2f}")
-            print(f"1h Price Change: {hour_data.get('price_change', 0)}%")
-            print(f"1h B/S Ratio: {hour_data.get('bs_ratio', '1/1')}")
-            
-            print("\n--- PARAMETER RANGES CHECK ---")
-            for param, details in analysis_result['primary_check']['details'].items():
-                status = "✅" if details['in_range'] else "❌"
-                print(f"\n{status} {param}:")
-                print(f"    Current Value: {details['value']:.2f}")
-                print(f"    Valid Range: {details['interval']['min']:.2f} - {details['interval']['max']:.2f}")
-                print(f"    Z-Score: {details['z_score']:.2f}")
+            try:
+                proficy_data = scanner_data.get('proficy', {})
+                if not proficy_data:
+                    print("No Proficy data available")
+                else:
+                    hour_data = proficy_data.get('1h', {})
+                    if not hour_data:
+                        print("No 1h data available")
+                    else:
+                        # Saugus formatavimas su patikrinimais
+                        volume = hour_data.get('volume')
+                        if volume is not None:
+                            print(f"1h Volume: ${float(volume):,.2f}")
+                        else:
+                            print("1h Volume: N/A")
+
+                        price_change = hour_data.get('price_change')
+                        if price_change is not None:
+                            print(f"1h Price Change: {float(price_change)}%")
+                        else:
+                            print("1h Price Change: N/A")
+
+                        bs_ratio = hour_data.get('bs_ratio', 'N/A')
+                        print(f"1h B/S Ratio: {bs_ratio}")
+
+            except Exception as e:
+                logger.error(f"Error processing Proficy data: {e}")
+                print("1h Volume: N/A")
+                print("1h Price Change: N/A")
+                print("1h B/S Ratio: N/A")
             
             print("\n--- ANALYSIS RESULTS ---")
             print(f"GEM Potential Score: {analysis_result['similarity_score']:.1f}%")
@@ -434,51 +489,76 @@ class TokenMonitor:
 
     async def format_analysis_message(self, analysis_result: Dict, scanner_data: Dict) -> str:
         """Formatuoja analizės rezultatų žinutę"""
-        utc_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
-        
-        soul_data = scanner_data['soul']
-        syrax_data = scanner_data['syrax']
-        proficy_data = scanner_data['proficy']
+        try:
+            utc_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Patikriname ar turime reikiamus duomenis
+            soul_data = scanner_data.get('soul', {})
+            
+            token_address = (
+                soul_data.get('token_address') or 
+                soul_data.get('address') or 
+                soul_data.get('contract_address') or
+                'Unknown'
+            )
 
-        token_address = (
-            soul_data.get('token_address') or 
-            soul_data.get('address') or 
-            soul_data.get('contract_address')
-        )
+            message = f"""Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {utc_time}
+        Current User's Login: minijus05
 
-        # Pradžios tekstas
-        message = f"""Current Date and Time (UTC - YYYY-MM-DD HH:MM:SS formatted): {utc_time}
-    Current User's Login: minijus05
+        --- PARAMETER RANGES CHECK ---"""
 
-    --- PARAMETER RANGES CHECK ---"""
+            # Parameter ranges check dalis - tik jei turime primary_check
+            if 'primary_check' in analysis_result and 'details' in analysis_result['primary_check']:
+                for param, details in analysis_result['primary_check']['details'].items():
+                    if not details:
+                        continue
+                        
+                    try:
+                        status = "✅" if details.get('in_range', False) else "❌"
+                        value = float(details.get('value', 0))
+                        interval_min = float(details.get('interval', {}).get('min', 0))
+                        interval_max = float(details.get('interval', {}).get('max', 0))
+                        z_score = float(details.get('z_score', 0))
+                        
+                        message += f"""
 
-        # Parameter ranges check dalis
-        for param, details in analysis_result['primary_check']['details'].items():
-            status = "✅" if details['in_range'] else "❌"
+        {status} {param}:
+            Current Value: {value:.2f}
+            Valid Range: {interval_min:.2f} - {interval_max:.2f}
+            Z-Score: {z_score:.2f}"""
+                    except (ValueError, TypeError):
+                        continue
+
+            # Analysis Results dalis
+            similarity_score = float(analysis_result.get('similarity_score', 0))
+            confidence_level = float(analysis_result.get('confidence_level', 0))
+            recommendation = analysis_result.get('recommendation', 'No recommendation')
+            
             message += f"""
 
-    {status} {param}:
-        Current Value: {details['value']:.2f}
-        Valid Range: {details['interval']['min']:.2f} - {details['interval']['max']:.2f}
-        Z-Score: {details['z_score']:.2f}"""
+        --- ANALYSIS RESULTS ---
+        GEM Potential Score: {similarity_score:.1f}%
+        Confidence Level: {confidence_level:.1f}%
+        Recommendation: {recommendation}
 
-        # Analysis Results dalis
-        message += f"""
+        
+        Token Address:
+        `{token_address}`"""
 
-    --- ANALYSIS RESULTS ---
-    GEM Potential Score: {analysis_result['similarity_score']:.1f}%
-    Confidence Level: {analysis_result['confidence_level']:.1f}%
-    Recommendation: {analysis_result['recommendation']}
+            if soul_data.get('contract_address'):
+                message += f"""
+        [View on GMGN](https://gmgn.ai/sol/token/{soul_data['contract_address']})"""
 
-    
-    Token Address:
-    `{token_address}`
-    [View on GMGN](https://gmgn.ai/sol/token/{soul_data['contract_address']})
+            message += """
 
-    
-    TokenAnalysis"""
+        
+        TokenAnalysis"""
 
-        return message
+            return message
+
+        except Exception as e:
+            logger.error(f"Error formatting analysis message: {e}")
+            return "Error formatting analysis message"
 
     
     def _extract_token_addresses(self, message: str) -> List[str]:
@@ -500,8 +580,19 @@ class TokenMonitor:
                 # Soul Scanner start
                 r'soul_scanner_bot\?start=([A-Za-z0-9]{32,44})',
                 # Rugcheck
-                r'rugcheck\.xyz/tokens/([A-Za-z0-9]{32,44})'
-            ]
+                r'rugcheck\.xyz/tokens/([A-Za-z0-9]{32,44})',
+                # Papildomi Contract Address formatai
+                # Papildomi Contract Address formatai
+            # Papildomi Contract Address formatai
+                r'Contract Address:\s*([A-Za-z0-9]{32,44})',
+                r'(?:🔸|💠|🔷)\s*(?:CA|Contract Address):\s*([A-Za-z0-9]{32,44})',
+                r'(?:\n|\\n)\s*Contract Address:\s*([A-Za-z0-9]{32,44})',
+                r'🔸\s*[^:]+:\s*([A-Za-z0-9]{32,44})',
+                # Birdeye URL
+                r'birdeye\.so/token/([A-Za-z0-9]{32,44})',
+                # Raydium URL
+                r'outputCurrency=([A-Za-z0-9]{32,44})'
+                ]
             
             # Ieškome per kiekvieną pattern, kol randame pirmą tinkamą adresą
             for pattern in patterns:
@@ -526,7 +617,7 @@ class TokenMonitor:
         
         
         important_emoji = ['💠', '🤍', '✅', '❌', '🔻', '🐟', '🍤', '🐳', '🌱', '🕒', '📈', '⚡️', '👥', '🔗', '🦅', '🔫', '⚠️', '🛠', '🔝', '🔥', '💧', '😳', '🤔', '🚩', '📦', '🎯',
-            '👍', '💰', '💼']
+            '👍', '💰', '💼', '🌊']
         
         # 1. Pašalinam Markdown žymėjimą
         cleaned = re.sub(r'\*\*', '', text)
@@ -667,6 +758,29 @@ class TokenMonitor:
         except Exception as e:
             self.logger.error(f"Error parsing message: {str(e)}")
             return {}
+
+    def parse_solsniff_scanner_response(self, text: str) -> Dict:
+        """Parse SolSniffer Scanner message"""
+        try:
+            data = {}
+            lines = text.split('\n')
+            
+            for line in lines:
+                if not line.strip():
+                    continue
+                    
+                clean_line = self.clean_line(line)
+                
+                # Snifscore extraction
+                if '🌊' in line and 'Snifscore:' in line:
+                    if match := re.search(r'Snifscore:\s*(\d+)', clean_line):
+                        data['snifscore'] = int(match.group(1))
+                        
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error parsing SolSniffer response: {e}")
+            return None    
 
     def parse_syrax_scanner_response(self, text: str) -> Dict:
         """Parse Syrax Scanner message"""
@@ -925,7 +1039,23 @@ class TokenMonitor:
     async def parse_proficy_price(self, message: str) -> Dict:
         """Parse ProficyPriceBot message"""
         try:
-            # 1. PAKEISTI: Inicializuojame data su None reikšmėmis vietoj 'N/A'
+            # 1. PRIDĖTI: Patikrinimas ar yra valid intervals
+            if "No valid intervals found" in message:
+                logger.warning("No valid intervals found in ProficyPriceBot message")
+                return {
+                    '5m': {
+                        'price_change': None,
+                        'volume': None,
+                        'bs_ratio': None
+                    },
+                    '1h': {
+                        'price_change': None,
+                        'volume': None,
+                        'bs_ratio': None
+                    }
+                }
+
+            # Inicializuojame data su None reikšmėmis
             data = {
                 '5m': {
                     'price_change': None,
@@ -939,14 +1069,12 @@ class TokenMonitor:
                 }
             }
 
-            # 2. PRIDĖTI: Patikrinimas ar message nėra tuščias
             if not message:
                 logger.warning("Empty message received from ProficyPriceBot")
                 return data
-                
+                    
             lines = message.split('\n')
             
-            # Šios funkcijos nekeičiamos
             def convert_volume(volume_str: str) -> float:
                 """Helper function to convert volume with K or M suffix"""
                 try:
@@ -1032,6 +1160,7 @@ class MLIntervalAnalyzer:
             'holders_top10_percentage',
             'holders_top25_percentage',
             'holders_top50_percentage',
+            'snifscore',
             
             # Soul Scanner parametrai (soul_scanner_data lentelė)
             'market_cap',
@@ -1056,16 +1185,16 @@ class MLIntervalAnalyzer:
         ]
         
         self.filter_status = {
-                    'dev_created_tokens': False,
-                    'same_name_count': False, 
-                    'same_website_count': False,
-                    'same_telegram_count': False,
-                    'same_twitter_count': False,
+                    'dev_created_tokens': True,
+                    'same_name_count': True, 
+                    'same_website_count': True,
+                    'same_telegram_count': True,
+                    'same_twitter_count': True,
                     'dev_bought_percentage': False,
                     'dev_bought_curve_percentage': False,
                     'dev_sold_percentage': False,
                     'holders_total': True,
-                    'holders_top10_percentage': False,
+                    'holders_top10_percentage': True,
                     'holders_top25_percentage': False,
                     'holders_top50_percentage': False,
                     'market_cap': True,
@@ -1082,7 +1211,8 @@ class MLIntervalAnalyzer:
                     'traders_count': True,
                     'sniper_activity_percentage': True,
                     'notable_bundle_supply_percentage': True,
-                    'bundle_supply_percentage': True
+                    'bundle_supply_percentage': True,
+                    'snifscore': True,
                 }
         
         self.scaler = MinMaxScaler()
@@ -1113,10 +1243,10 @@ class MLIntervalAnalyzer:
             'price_change_1h': (-100, 1000),      # nuo -100% iki 1000%
             'market_cap': (5000, 1000000),      # nuo 100$ iki 1B$
             'volume_1h': (10, 10000000),          # nuo 10$ iki 10M$
-            'holders_total': (5, 100000),         # nuo 1 iki 100k
+            'holders_total': (200, 100000),         # nuo 1 iki 100k
             'liquidity_usd': (0, 10000000),      # nuo 10$ iki 10M$
             'total_scans': (10, 1000000),          # negali būti 0
-            'traders_count': (5, 100000),         # negali būti 0
+            'traders_count': (200, 100000),         # negali būti 0
             'bundle_count': (0, 0),               # visada 0
             'mint_status': (0, 0),                # visada false (0)
             'freeze_status': (0, 0),              # visada false (0)
@@ -1126,7 +1256,10 @@ class MLIntervalAnalyzer:
             # Naujai pridedami parametrai
             'sniper_activity_percentage': (0, 16),       # nuo 0% iki 100%
             'notable_bundle_supply_percentage': (0, 16),  # nuo 0% iki 100%
-            'bundle_supply_percentage': (0, 16)          # nuo 0% iki 100%
+            'bundle_supply_percentage': (0, 16),          # nuo 0% iki 100%
+            'dev_sold_percentage': (50, 100),        # Tokios pat ribos kaip ir kitiems procentiniams parametrams
+            'dev_bought_percentage': (0, 10),
+            'snifscore': (80, 100)
         }
 
     def _parse_ratio_value(self, ratio_str) -> float:
@@ -1304,7 +1437,7 @@ class MLIntervalAnalyzer:
         # Tikriname TIK įjungtus filtrus
         enabled_features = [f for f in self.primary_features if self.filter_status.get(f, False)]
         
-        for feature in enabled_features:  # Keičiame iš self.primary_features į enabled_features
+        for feature in enabled_features:
             try:
                 # Tiesiogiai imame reikšmę iš parametrų
                 if feature == 'bs_ratio_1h':
@@ -1312,33 +1445,29 @@ class MLIntervalAnalyzer:
                 else:
                     value = float(token_data[feature] if token_data[feature] is not None else 0)
                     
-                    # Svarbi dev_sold_percentage patikra
-                    if feature == 'dev_sold_percentage':
-                        dev_bought = float(token_data['dev_bought_percentage'] if token_data['dev_bought_percentage'] is not None else 0)
-                        # Jei dev'as pirko bet dar nepardavė - rizikinga situacija
-                        if dev_bought > 0 and value == 0:
-                            results[feature] = {
-                                'value': value,
-                                'in_range': False,
-                                'z_score': float('inf'),
-                                'interval': self.intervals[feature]
-                            }
-                            continue
+                interval = self.intervals[feature]
+                
+                # Standartinis intervalų patikrinimas visiems parametrams
+                in_range = interval['min'] <= value <= interval['max']
+                z_score = abs((value - interval['mean']) / interval['std']) if interval['std'] > 0 else float('inf')
+                
+                results[feature] = {
+                    'value': value,
+                    'in_range': in_range,
+                    'z_score': z_score,
+                    'interval': interval
+                }
                                 
             except (ValueError, TypeError, KeyError):
                 value = 1.0 if feature == 'bs_ratio_1h' else 0.0
+                interval = self.intervals[feature]
                 
-            interval = self.intervals[feature]
-            
-            in_range = interval['min'] <= value <= interval['max']
-            z_score = abs((value - interval['mean']) / interval['std']) if interval['std'] > 0 else float('inf')
-            
-            results[feature] = {
-                'value': value,
-                'in_range': in_range,
-                'z_score': z_score,
-                'interval': interval
-            }
+                results[feature] = {
+                    'value': value,
+                    'in_range': True,  # Default reikšmėms leidžiame būti intervale
+                    'z_score': 0,      # Default z-score
+                    'interval': interval
+                }
             
         # Bendras rezultatas - skaičiuojame TIK iš įjungtų filtrų rezultatų
         all_in_range = all(result['in_range'] for result in results.values())
@@ -1395,7 +1524,8 @@ class MLGEMAnalyzer:
             'proficy': [
                 'price_change_5m', 'volume_5m', 'bs_ratio_5m',
                 'price_change_1h', 'volume_1h', 'bs_ratio_1h'
-            ]
+            ],
+            'solsniff': ['snifscore']
         }
         
         self.gem_tokens = []
@@ -1463,23 +1593,28 @@ class MLGEMAnalyzer:
         try:
             for token in self.gem_tokens:
                 features = []
-                # Soul features
+                # Soul features - TIK įjungti
                 for feature in self.features['soul']:
-                    value = self._safe_float(token.get(feature))
-                    features.append(value)
+                    if self.interval_analyzer.filter_status.get(feature, False):  # Tikrinam ar įjungtas
+                        features.append(self._safe_float(token.get(feature)))
 
-                # Syrax features    
+                # Syrax features - TIK įjungti    
                 for feature in self.features['syrax']:
-                    value = self._safe_float(token.get(feature))
-                    features.append(value)
+                    if self.interval_analyzer.filter_status.get(feature, False):  # Tikrinam ar įjungtas
+                        features.append(self._safe_float(token.get(feature)))
 
-                # Proficy features    
+                # SolSniffer features - TIK įjungti    
+                for feature in self.features['solsniff']:
+                    if self.interval_analyzer.filter_status.get(feature, False):
+                        features.append(self._safe_float(token.get(feature)))
+
+                # Proficy features - TIK įjungti    
                 for feature in self.features['proficy']:
-                    if 'bs_ratio' in feature:
-                        value = self._parse_bs_ratio(token.get(feature, '1/1'))
-                    else:
-                        value = self._safe_float(token.get(feature))
-                    features.append(value)
+                    if self.interval_analyzer.filter_status.get(feature, False):  # Tikrinam ar įjungtas
+                        if 'bs_ratio' in feature:
+                            features.append(self._parse_bs_ratio(token.get(feature, '1/1')))
+                        else:
+                            features.append(self._safe_float(token.get(feature)))
                 
                 data.append(features)
             
@@ -1641,6 +1776,9 @@ class MLGEMAnalyzer:
                     
                 if self.interval_analyzer.filter_status.get('same_name_count', False):
                     primary_data['same_name_count'] = float(db_data.get('same_name_count', 0))
+
+                if self.interval_analyzer.filter_status.get('snifscore', False):
+                    primary_data['snifscore'] = float(db_data.get('snifscore', 0))
                     
                 if self.interval_analyzer.filter_status.get('same_website_count', False):
                     primary_data['same_website_count'] = float(db_data.get('same_website_count', 0))
@@ -1737,69 +1875,35 @@ class MLGEMAnalyzer:
                     }
 
                 # ML analizei ruošiame features pagal scannerius
+                # ML analizei ruošiame features pagal scannerius
                 try:
                     features = []
                     feature_details = {}
                     
-                    # Soul scanner features
-                    soul_features = {
-                        'market_cap': float(db_data.get('market_cap', 0)),
-                        'ath_market_cap': float(db_data.get('ath_market_cap', 0)),
-                        'liquidity_usd': float(db_data.get('liquidity_usd', 0)),
-                        'liquidity_sol': float(db_data.get('liquidity_sol', 0)),
-                        'mint_status': float(db_data.get('mint_status', 0)),
-                        'freeze_status': float(db_data.get('freeze_status', 0)),
-                        'lp_status': float(db_data.get('lp_status', 0)),
-                        'dex_status_paid': float(db_data.get('dex_status_paid', 0)),
-                        'dex_status_ads': float(db_data.get('dex_status_ads', 0)),
-                        'total_scans': float(db_data.get('total_scans', 0))
-                    }
+                    # Soul scanner features - TIK įjungti
+                    soul_features = {}
+                    for feature in self.features['soul']:
+                        if self.interval_analyzer.filter_status.get(feature, False):  # Tikrinam ar įjungtas
+                            soul_features[feature] = float(db_data.get(feature, 0))
                     features.extend(soul_features.values())
                     feature_details['soul'] = soul_features
 
-                    # Syrax scanner features
-                    syrax_features = {
-                        'dev_bought_tokens': float(db_data.get('dev_bought_tokens', 0)),
-                        'dev_bought_sol': float(db_data.get('dev_bought_sol', 0)),
-                        'dev_bought_percentage': float(db_data.get('dev_bought_percentage', 0)),
-                        'dev_bought_curve_percentage': float(db_data.get('dev_bought_curve_percentage', 0)),
-                        'dev_created_tokens': float(db_data.get('dev_created_tokens', 0)),
-                        'same_name_count': float(db_data.get('same_name_count', 0)),
-                        'same_website_count': float(db_data.get('same_website_count', 0)),
-                        'same_telegram_count': float(db_data.get('same_telegram_count', 0)),
-                        'same_twitter_count': float(db_data.get('same_twitter_count', 0)),
-                        'bundle_count': float(db_data.get('bundle_count', 0)),
-                        'bundle_supply_percentage': float(db_data.get('bundle_supply_percentage', 0)),
-                        'bundle_curve_percentage': float(db_data.get('bundle_curve_percentage', 0)),
-                        'bundle_sol': float(db_data.get('bundle_sol', 0)),
-                        'notable_bundle_count': float(db_data.get('notable_bundle_count', 0)),
-                        'notable_bundle_supply_percentage': float(db_data.get('notable_bundle_supply_percentage', 0)),
-                        'notable_bundle_curve_percentage': float(db_data.get('notable_bundle_curve_percentage', 0)),
-                        'notable_bundle_sol': float(db_data.get('notable_bundle_sol', 0)),
-                        'sniper_activity_tokens': float(db_data.get('sniper_activity_tokens', 0)),
-                        'sniper_activity_percentage': float(db_data.get('sniper_activity_percentage', 0)),
-                        'sniper_activity_sol': float(db_data.get('sniper_activity_sol', 0)),
-                        'holders_total': float(db_data.get('holders_total', 0)),
-                        'holders_top10_percentage': float(db_data.get('holders_top10_percentage', 0)),
-                        'holders_top25_percentage': float(db_data.get('holders_top25_percentage', 0)),
-                        'holders_top50_percentage': float(db_data.get('holders_top50_percentage', 0)),
-                        'dev_holds': float(db_data.get('dev_holds', 0)),
-                        'dev_sold_times': float(db_data.get('dev_sold_times', 0)),
-                        'dev_sold_sol': float(db_data.get('dev_sold_sol', 0)),
-                        'dev_sold_percentage': float(db_data.get('dev_sold_percentage', 0))
-                    }
+                    # Syrax scanner features - TIK įjungti
+                    syrax_features = {}
+                    for feature in self.features['syrax']:
+                        if self.interval_analyzer.filter_status.get(feature, False):  # Tikrinam ar įjungtas
+                            syrax_features[feature] = float(db_data.get(feature, 0))
                     features.extend(syrax_features.values())
                     feature_details['syrax'] = syrax_features
 
-                    # Proficy features
-                    proficy_features = {
-                        'price_change_5m': float(db_data.get('price_change_5m', 0)),
-                        'volume_5m': float(db_data.get('volume_5m', 0)),
-                        'bs_ratio_5m': self._parse_bs_ratio(db_data.get('bs_ratio_5m', '1/1')),
-                        'price_change_1h': float(db_data.get('price_change_1h', 0)),
-                        'volume_1h': float(db_data.get('volume_1h', 0)),
-                        'bs_ratio_1h': self._parse_bs_ratio(db_data.get('bs_ratio_1h', '1/1'))
-                    }
+                    # Proficy features - TIK įjungti
+                    proficy_features = {}
+                    for feature in self.features['proficy']:
+                        if self.interval_analyzer.filter_status.get(feature, False):  # Tikrinam ar įjungtas
+                            if 'bs_ratio' in feature:
+                                proficy_features[feature] = self._parse_bs_ratio(db_data.get(feature, '1/1'))
+                            else:
+                                proficy_features[feature] = float(db_data.get(feature, 0))
                     features.extend(proficy_features.values())
                     feature_details['proficy'] = proficy_features
 
@@ -2180,7 +2284,7 @@ class DatabaseManager:
         
         return initial_mc, multiplier
 
-    def save_token_data(self, address: str, soul_data: Dict, syrax_data: Dict, proficy_data: Dict, is_new_token: bool):
+    def save_token_data(self, address: str, soul_data: Dict, syrax_data: Dict, proficy_data: Dict, solsniff_data: Dict, is_new_token: bool):
         try:
             
             
@@ -2233,6 +2337,24 @@ class DatabaseManager:
                             soul_data.get('social_links', {}).get('TG'),
                             soul_data.get('social_links', {}).get('WEB')
                         ))
+
+                    # SolSniffer Scanner duomenų įrašymas
+                    if solsniff_data:
+                        try:
+                            print(f"[DEBUG] Attempting to insert SolSniffer Scanner data for {address}")
+                            self.cursor.execute('''
+                                INSERT INTO solsniff_scanner_data (
+                                    token_address,
+                                    snifscore,
+                                    scan_time
+                                ) VALUES (?, ?, CURRENT_TIMESTAMP)
+                            ''', (
+                                address,
+                                solsniff_data.get('snifscore')
+                            ))
+                        except Exception as e:
+                            print(f"[ERROR] Failed to insert SolSniffer data: {e}")
+                            raise
                         
                     
                     # Syrax Scanner duomenų įrašymas
@@ -2383,6 +2505,15 @@ class DatabaseManager:
                             LIMIT 1
                         ''', (address,))
                         initial_proficy_data = dict(self.cursor.fetchone())
+
+                        # Gauname pradinius SolSniffer duomenis
+                        self.cursor.execute('''
+                            SELECT * FROM solsniff_scanner_data 
+                            WHERE token_address = ? 
+                            ORDER BY scan_time ASC 
+                            LIMIT 1
+                        ''', (address,))
+                        initial_solsniff_data = dict(self.cursor.fetchone())
                         
                         # Įrašome į gem_tokens ML analizei
                         # gem_tokens INSERT užklausą pakeisti į:
@@ -2414,6 +2545,9 @@ class DatabaseManager:
                                 -- Proficy pradiniai duomenys
                                 initial_price_change_5m, initial_volume_5m, initial_bs_ratio_5m,
                                 initial_price_change_1h, initial_volume_1h, initial_bs_ratio_1h,
+
+                                -- SolSniffer pradiniai duomenys
+                                initial_snifscore,
                                 
                                 -- ML rezultatai
                                 similarity_score, confidence_level, recommendation, avg_z_score, is_passed, discovery_time
@@ -2472,6 +2606,9 @@ class DatabaseManager:
                             initial_syrax_data.get('dev_sold_times', 0),
                             initial_syrax_data.get('dev_sold_sol', 0),
                             initial_syrax_data.get('dev_sold_percentage', 0),
+
+                            # SolSniffer duomenys
+                            initial_solsniff_data.get('snifscore') if initial_solsniff_data else None,
                             
                             # Proficy duomenys
                             initial_proficy_data.get('price_change_5m', 0),
@@ -2498,7 +2635,7 @@ class DatabaseManager:
                 print(f"[DEBUG] Final check - token in database: {bool(final_check)}")
                 
                 if final_check:
-                    print(f"[DEBUG] Token status - is_gem: {final_check['is_gem']}, total_scans: {final_check['total_scans']}")
+                    print(f"[DEBUG] Token status - is_gem: {final_check['is_gem']}, total_scans: {final_check['total_scans']}, snifscore: {final_check['snifscore']}")
                 
                 # Patikriname ar įrašyti scanner'ių duomenys
                 self.cursor.execute("SELECT COUNT(*) FROM soul_scanner_data WHERE token_address = ?", (address,))
@@ -2507,11 +2644,14 @@ class DatabaseManager:
                 syrax_count = self.cursor.fetchone()[0]
                 self.cursor.execute("SELECT COUNT(*) FROM proficy_price_data WHERE token_address = ?", (address,))
                 proficy_count = self.cursor.fetchone()[0]
+                self.cursor.execute("SELECT COUNT(*) FROM solsniff_scanner_data WHERE token_address = ?", (address,))
+                solsniff_count = self.cursor.fetchone()[0]
                 
                 print(f"[DEBUG] Scanner data records:")
                 print(f"- Soul Scanner records: {soul_count}")
                 print(f"- Syrax Scanner records: {syrax_count}")
                 print(f"- Proficy Price records: {proficy_count}")
+                print(f"- SolSniffer Scanner records: {solsniff_count}")
                 
                 return True
 
@@ -2609,6 +2749,7 @@ class DatabaseManager:
                 p.price_change_1h,
                 p.volume_1h,
                 p.bs_ratio_1h,
+                ss.snifscore,
                 -- GEM analizės rezultatai
                 g.similarity_score,
                 g.confidence_level,
@@ -2618,25 +2759,31 @@ class DatabaseManager:
                 g.discovery_time
             FROM tokens t
             JOIN gem_tokens g ON t.address = g.token_address
-            JOIN soul_scanner_data s ON t.address = s.token_address
-            JOIN syrax_scanner_data sy ON t.address = sy.token_address
-            JOIN proficy_price_data p ON t.address = p.token_address
+            LEFT JOIN soul_scanner_data s ON t.address = s.token_address
+            LEFT JOIN syrax_scanner_data sy ON t.address = sy.token_address
+            LEFT JOIN proficy_price_data p ON t.address = p.token_address
+            LEFT JOIN solsniff_scanner_data ss ON t.address = ss.token_address
             WHERE t.is_gem = TRUE
-            AND s.scan_time = (
+            AND (s.scan_time IS NULL OR s.scan_time = (
                 SELECT MIN(scan_time) 
                 FROM soul_scanner_data 
                 WHERE token_address = t.address
-            )
-            AND sy.scan_time = (
+            ))
+            AND (sy.scan_time IS NULL OR sy.scan_time = (
                 SELECT MIN(scan_time) 
                 FROM syrax_scanner_data 
                 WHERE token_address = t.address
-            )
-            AND p.scan_time = (
+            ))
+            AND (p.scan_time IS NULL OR p.scan_time = (
                 SELECT MIN(scan_time) 
                 FROM proficy_price_data 
                 WHERE token_address = t.address
-            )
+            ))
+            AND (ss.scan_time IS NULL OR ss.scan_time = (
+                SELECT MIN(scan_time) 
+                FROM solsniff_scanner_data 
+                WHERE token_address = t.address
+            ))
             ORDER BY g.discovery_time DESC
             ''')
             rows = self.cursor.fetchall()
@@ -2716,6 +2863,9 @@ class DatabaseManager:
                 print(f"- Price Change: {token.get('price_change_1h')}")
                 print(f"- Volume: {token.get('volume_1h')}")
                 print(f"- B/S Ratio: {token.get('bs_ratio_1h')}")
+
+                print("\nSolSniffer Data:")
+                print(f"Snif Score: {token.get('snifscore')}")
 
                 print("\nAnalysis Results:")
                 print(f"Similarity Score: {token.get('similarity_score')}")
@@ -2813,6 +2963,7 @@ class DatabaseManager:
                         s.social_link_x,
                         s.social_link_tg,
                         s.social_link_web,
+                        ss.snifscore,
                         sy.dev_bought_tokens,
                         sy.dev_bought_sol,
                         sy.dev_bought_percentage,
@@ -2852,6 +3003,8 @@ class DatabaseManager:
                     LEFT JOIN soul_scanner_data s ON t.address = s.token_address
                     LEFT JOIN syrax_scanner_data sy ON t.address = sy.token_address
                     LEFT JOIN proficy_price_data p ON t.address = p.token_address
+                    LEFT JOIN solsniff_scanner_data ss ON t.address = ss.token_address
+                    LEFT JOIN solsniff_scanner_data ss ON t.address = ss.token_address
                 )
                 SELECT * FROM LatestData WHERE rn = 1
                 ORDER BY first_seen DESC
@@ -2996,6 +3149,18 @@ class DatabaseManager:
             print(f"\nSyrax Scanner Data:")
             print(f"Unique GEM tokens: {syrax_counts['tokens']}")
             print(f"Total records: {syrax_counts['total_records']}")
+
+            # Tikriname solsniff_scanner_data
+            self.cursor.execute("""
+                SELECT COUNT(DISTINCT token_address) as tokens,
+                       COUNT(*) as total_records
+                FROM solsniff_scanner_data
+                WHERE token_address IN (SELECT address FROM tokens WHERE is_gem = TRUE)
+            """)
+            solsniff_counts = dict(self.cursor.fetchone())
+            print(f"\nSolSniffer Scanner Data:")
+            print(f"Unique GEM tokens: {solsniff_counts['tokens']}")
+            print(f"Total records: {solsniff_counts['total_records']}")
             
             # Tikriname proficy_price_data
             self.cursor.execute("""
@@ -3037,6 +3202,25 @@ def initialize_database():
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         is_gem BOOLEAN DEFAULT FALSE,
         total_scans INTEGER DEFAULT 1
+    )''')
+
+    # Saugiai pridedame snifscore stulpelį
+    try:
+        c.execute('ALTER TABLE tokens ADD COLUMN snifscore INTEGER;')
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if 'duplicate column name' not in str(e):
+            raise e
+
+       
+    # SolSniffer Scanner duomenys
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS solsniff_scanner_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_address TEXT NOT NULL,
+        snifscore INTEGER,
+        scan_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (token_address) REFERENCES tokens(address)
     )''')
 
     # Soul Scanner duomenys
@@ -3181,6 +3365,9 @@ def initialize_database():
         initial_price_change_1h REAL,
         initial_volume_1h REAL,
         initial_bs_ratio_1h TEXT,
+        
+        -- SolSniffer pradiniai duomenys
+        initial_snifscore INTEGER,
         
         -- ML analizės rezultatai
         similarity_score REAL,
