@@ -291,23 +291,46 @@ class TokenMonitor:
             "solsniff": None 
         }
 
+            
+        
+
         while time.time() - start_time < timeout:
-            if time.time() - last_check_time >= 1:
+            if time.time() - last_check_time >= 2 :
                 last_check_time = time.time()
 
+                if not scanner_data["solsniff"]:  # Jei dar neturim solsniff duomenų
+                    elapsed = int(time.time() - start_time)
+                    print(f"\n=== Checking SolSnifferBot Messages (Elapsed: {elapsed}s) ===")
+                    print(f"Looking for response for address: {address.lower()}")
+                    
+                    async for message in self.scanner_client.iter_messages(
+                        '@solsnifferbot',
+                        limit=10
+                    ):
+                        print("\n--- Message from @solsnifferbot ---")
+                        print(f"Raw message:\n{message.text}")
+                        
+                        # Skip jei tai /scan žinutė
+                        if message.text.strip().startswith("/scan"):
+                            print("Skipping scan request")
+                            continue
+                        
+                        # Check if we found Snifscore
+                        match = re.search(r'\*\*🌊\s*Snifscore:\*\*\s*(\d+)', message.text)
+                        if match:
+                            score = int(match.group(1))
+                            print(f"Found Snifscore: {score} for our token {address}")
+                            scanner_data["solsniff"] = {"snifscore": score}  # ČIA įrašom score
+                            print(f"[DEBUG] Updated scanner_data with snifscore: {scanner_data['solsniff']}")  # Debug
+                            break
+                        else:
+                            print(f"[WARNING] Found our token but no Snifscore in message!")
+                        
+                # Patikriname @sakneris atsakymą
                 async for message in self.scanner_client.iter_messages(
-                    '@solsnifferbot',
+                    '@skaneriss',
                     limit=5
                 ):
-                    if message.id > original_message.id and address.lower() in message.text.lower():
-                        scanner_data["solsniff"] = self.parse_solsniff_scanner_response(message.text)
-                        break
-
-            # Patikriname @sakneris atsakymą
-            async for message in self.scanner_client.iter_messages(
-                '@skaneriss',
-                limit=5
-            ):
                     if message.sender_id == Config.SOUL_SCANNER_BOT:
                         scanner_data["soul"] = self.parse_soul_scanner_response(message.text)
                     elif message.sender_id == Config.SYRAX_SCANNER_BOT:
@@ -317,22 +340,33 @@ class TokenMonitor:
                     
 
                     # Pakeičiame sąlygą - tęsiame jei turime bent Soul ir Syrax duomenis
+                    # Pakeičiame sąlygą - tęsiame jei turime bent Soul ir Syrax duomenis
                     if scanner_data["soul"] and scanner_data["syrax"]:
-                        # Jei neturime Proficy duomenų, sukuriame default reikšmes
-                        if not scanner_data["proficy"]:
-                            scanner_data["proficy"] = {
-                                "price_change_5m": "0",
-                                "volume_5m": "0",
-                                "bs_ratio_5m": "1/1",
-                                "price_change_1h": "0",
-                                "volume_1h": "0",
-                                "bs_ratio_1h": "1/1"
-                            }
-                        return scanner_data
+                        # Jei jau turim solsniff - grąžinam viską
+                        if scanner_data["solsniff"]:
+                            return scanner_data
+                        # Jei dar nepraėjo 10s - tęsiam laukti solsniff
+                        elif elapsed < 30:
+                            print(f"Got soul+syrax, waiting for solsniff... ({elapsed}s)")
+                            if not scanner_data["proficy"]:
+                                scanner_data["proficy"] = {
+                                    "price_change_5m": "0",
+                                    "volume_5m": "0",
+                                    "bs_ratio_5m": "1/1",
+                                    "price_change_1h": "0",
+                                    "volume_1h": "0",
+                                    "bs_ratio_1h": "1/1"
+                                }
+                            continue
+                        # Jei praėjo 10s - grąžinam be solsniff
+                        else:
+                            print("Timeout waiting for solsniff")
+                            return scanner_data
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
         
-        # Jei turime bent Soul ir Syrax duomenis po timeout, grąžiname juos
+        # Jei praėjo timeout
+        print(f"Timeout after {elapsed}s")
         if scanner_data["soul"] and scanner_data["syrax"]:
             if not scanner_data["proficy"]:
                 scanner_data["proficy"] = {
@@ -343,8 +377,10 @@ class TokenMonitor:
                     "volume_1h": "0",
                     "bs_ratio_1h": "1/1"
                 }
+            print("Returning without SolSniff data")
             return scanner_data
         
+        print("Failed to get required data")
         return None
 
     async def _handle_analysis_results(self, analysis_result, scanner_data):
@@ -769,33 +805,7 @@ class TokenMonitor:
             self.logger.error(f"Error parsing message: {str(e)}")
             return {}
 
-    def parse_solsniff_scanner_response(self, text: str) -> Dict:
-        """Parse SolSniffer Scanner message"""
-        try:
-            data = {}
-            lines = text.split('\n')
-            
-            for line in lines:
-                try:
-                    if not line.strip():
-                        continue
-                        
-                    clean_line = self.clean_line(line)
-                    
-                    # Snifscore extraction
-                    if '🌊' in line and 'Snifscore:' in line:
-                        if match := re.search(r'Snifscore:\s*(\d+)', clean_line):
-                            data['snifscore'] = int(match.group(1))
-                            
-                except Exception as e:
-                    logger.warning(f"Error parsing line: {str(e)}")
-                    continue
-                        
-            return data
-                
-        except Exception as e:
-            logger.error(f"Error parsing message: {str(e)}")
-            return {}
+    
 
     def parse_syrax_scanner_response(self, text: str) -> Dict:
         """Parse Syrax Scanner message"""
@@ -2300,6 +2310,15 @@ class DatabaseManager:
         return initial_mc, multiplier
 
     def save_token_data(self, address: str, soul_data: Dict, syrax_data: Dict, proficy_data: Dict, solsniff_data: Dict, is_new_token: bool):
+        # Validacijos
+        if not solsniff_data:
+            print(f"[ERROR] No solsniff_data provided for token {address}")
+            return False
+            
+        if 'snifscore' not in solsniff_data:
+            print(f"[ERROR] Missing snifscore in solsniff_data for token {address}")
+            return False
+
         try:
             
             
@@ -2353,10 +2372,11 @@ class DatabaseManager:
                             soul_data.get('social_links', {}).get('WEB')
                         ))
 
-                    # SolSniffer Scanner duomenų įrašymas
                     if solsniff_data:
                         try:
                             print(f"[DEBUG] Attempting to insert SolSniffer Scanner data for {address}")
+                            snifscore = solsniff_data['snifscore'] if isinstance(solsniff_data, dict) else solsniff_data
+                            print(f"[DEBUG] Snifscore value to insert: {snifscore}")  # Debug log
                             self.cursor.execute('''
                                 INSERT INTO solsniff_scanner_data (
                                     token_address,
@@ -2365,11 +2385,36 @@ class DatabaseManager:
                                 ) VALUES (?, ?, CURRENT_TIMESTAMP)
                             ''', (
                                 address,
-                                solsniff_data.get('snifscore')
+                                snifscore
                             ))
+                            print(f"[DEBUG] Successfully inserted snifscore")
                         except Exception as e:
                             print(f"[ERROR] Failed to insert SolSniffer data: {e}")
                             raise
+                        finally:
+                            try:
+                                self.conn.commit()
+                                print(f"[DEBUG] SolSniffer data committed successfully")
+                                
+                                # Verification query
+                                self.cursor.execute('''
+                                    SELECT snifscore 
+                                    FROM solsniff_scanner_data 
+                                    WHERE token_address = ? 
+                                    ORDER BY scan_time DESC 
+                                    LIMIT 1
+                                ''', (address,))
+                                
+                                result = self.cursor.fetchone()
+                                if result:
+                                    print(f"[DEBUG] Verified snifscore in DB: {result[0]}")
+                                else:
+                                    print("[WARNING] Could not verify snifscore in DB")
+                                    
+                            except Exception as e:
+                                print(f"[ERROR] Failed to commit SolSniffer data: {e}")
+                                self.conn.rollback()
+                                raise
                         
                     
                     # Syrax Scanner duomenų įrašymas
